@@ -28,9 +28,9 @@ parser = argparse.ArgumentParser(description="Transformer ICL")
 # Basic setting
 parser.add_argument("--model_name", default="rope_decoder", type=str, help="Encoder or Decoder only Transformers")
 parser.add_argument("--device", default="cuda", type=str, help="device")
-parser.add_argument("--dtype", default="bfloat16", type=str, help="dtype")
+parser.add_argument("--dtype", default="float16", type=str, help="dtype")          # V100 can not support bfloat16 computation
 parser.add_argument("--mixed_precision", default=True, type=str2bool, help="Automatic Mixed Precision")
-parser.add_argument("--num_workers", default=0, type=int, help="Workers for Datalodaer")
+parser.add_argument("--num_workers", default=8, type=int, help="Workers for Datalodaer")
 parser.add_argument("--seed", default=1, type=int, help="random seed")
 parser.add_argument("--tqdm_bar", default=False, type=str2bool, help="Enable tqdm bar or not")
 
@@ -76,9 +76,9 @@ parser.add_argument("--n_val_step", default=16, type=int, help="How many batches
 
 # Optimization
 parser.add_argument("--optim", default="adamw", type=str, help="optimizer, use adamw only")
-parser.add_argument("--bs", default=1024, type=int, help="Batchsize for training")
+parser.add_argument("--bs", default=1024, type=int, help="Batchsize for training")       # When the batch size is not evenly divided by the total number of samples, the last batch will contain fewer samples than the specified batch size.
 parser.add_argument("--eval_bs", default=1024, type=int, help="Batchsize for evaluation")
-parser.add_argument("--lr", default=1.5e-4, type=float, help="Learning Rate. We fix warmup initial lr to be 0.01 * lr, final lr to be 0.1 * lr")
+parser.add_argument("--lr", default=1.5e-4, type=float, help="Learning Rate. We fix warmup initial lr to be 0.01 * lr, final lr to be 0.1 * lr") # the true lr_used = lr * lr_lambda(step) i.e.  "lr to optimizer" multiply "lr from scheduler"
 parser.add_argument("--n_cycles", default=1, type=int, help="Cycles of scheduler, only use 1 cycle.")
 parser.add_argument("--clip", default=0.0, type=float, help="Gradient clip, 0.0 means not used.")
 parser.add_argument("--wd", default=2.0, type=float, help="Weight decay")
@@ -100,7 +100,7 @@ parser.add_argument("--n_ckpts", default=1, type=int, help="number of checkpoint
 class TrainDataset(Dataset):
     def __init__(self, dataset, bs, args):
         self.dataset = dataset.transpose(0, 1)
-        self.n_data, self.n_task, self.dim = self.dataset.shape
+        self.n_data, self.n_task, self.dim = self.dataset.shape   # ensure that every batch has the same number of samples for different tasks
         self.bs = bs
         self.n_point_per_row = args.n_point_per_row
         self.args = args
@@ -109,7 +109,7 @@ class TrainDataset(Dataset):
         return self.bs * self.n_point_per_row * self.args.fake_restart_steps # To ensure we don't have to restart dataloader.
 
     def __getitem__(self, idx):
-        step_x = self.dataset[idx % self.n_data] # (n_tasks, dim)
+        step_x = self.dataset[idx % self.n_data] # (n_tasks, dim)  dim = 3
         return step_x
 
 
@@ -130,10 +130,10 @@ class EvalDataset(Dataset):
 
 
 def train_test_collate_fn(batch, args):
-    inputs = torch.stack(batch, dim=1)  # (n_tasks, bs * ctx // n_tasks, dim)
+    inputs = torch.stack(batch, dim=1)  # (n_tasks, bs * ctx // n_tasks, dim)   bs=1024, and bs is a multiple of n_tasks
     idx = torch.randperm(inputs.size(1))
     inputs = inputs[torch.arange(args.n_tasks)[:, None], idx[None, :]]
-    targets = inputs.clone() # (n_tasks, bs * ctx_length, dim)
+    targets = inputs.clone() # (n_tasks, bs * ctx_length // n_tasks, dim)
     targets[:, :, :-args.max_digits] = -100 # Mask the unpredictable part
     return inputs.view(-1, args.n_point_per_row * args.dim), targets.view(-1, args.n_point_per_row * args.dim)  # (bs, ctx_length * dim)
 
@@ -268,10 +268,15 @@ def main(args):
     ood_val_iter, _ = get_ood_dataloader(ood_val_set, args.ood_bs, args)
 
     assert args.s == 0.0
+
+
     model = RoPETransformer(RoPEFlashAttention, args).to(device=device)
 
     ddp_model = DDP(model)
+
+
     compiled_ddp_model = torch.compile(ddp_model)
+
 
     scaler = GradScaler(init_scale=2**15, enabled=args.mixed_precision, growth_interval=1000)
 
@@ -286,7 +291,7 @@ def main(args):
     ckpt_prefix = f"../ckpts/noembd{args.dont_decay_embd}_parale{args.parallelogram}_pltask{args.n_tasks_pl}"
     data_prefix = f"../data/noembd{args.dont_decay_embd}_parale{args.parallelogram}_pltask{args.n_tasks_pl}"
 
-    with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
+    with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):  #V100 can not support flash kernal
         data = train_tf_icl(compiled_ddp_model, model,
                             train_iter, val_iter, ood_train_iter, ood_val_iter, train_sampler,
                             scaler, args, device,

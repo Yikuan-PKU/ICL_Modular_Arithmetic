@@ -1,22 +1,33 @@
 #!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64536
-#SBATCH --time=6:00:00
-#SBATCH --job-name=icl
-#SBATCH --error=err/%A_%a.err
-#SBATCH --output=out/%A_%a.out
-#SBATCH --gpus=a100:1
+#SBATCH -J ICL
+#SBATCH -p gpu_l40
+#SBATCH -N 1
+#SBATCH -o ICL_%j.out
+#SBATCH -e ICL_%j.err
+#SBATCH --no-requeue
+#SBATCH -A qi_g1
+#SBATCH --qos=qil40
+#SBATCH --gres=gpu:2
+#SBATCH --overcommit
+#SBATCH --mincpus=9
 
-source ~/.bashrc
+
+
+
+
+nvidia-smi
+hostname
+
+source ~/lustre1/ykzhang/apps/python-3.11.11/venvICL/bin/activate
 cd $SLURM_SUBMIT_DIR
 
 # Get the number of nodes and GPUs per node
 NNODES=$SLURM_NNODES
-NPROC_PER_NODE=$SLURM_GPUS_ON_NODE
+NPROC_PER_NODE=2
 MASTER_PORT=$1
-export OMP_NUM_THREADS=$((SLURM_GPUS_ON_NODE * 2))
+export OMP_NUM_THREADS=$((2 * 2))
+
+
 
 # HyperPMs
 P=$2
@@ -35,8 +46,15 @@ NTASKS_PL=$9
 NTASKS_RD=${10}
 SEED=${11}
 
+
+
 # Define log file
 LOGFILE="icl_history.log"
+
+
+
+echo "$SLURM_GPUS_ON_NODE" >> $LOGFILE
+echo "$SLURM_NNODES" >> $LOGFILE
 
 # Build the command string
 # When torchrun, these arguments are then parsed inside the Python script using a library like argparse.
@@ -65,3 +83,31 @@ fi
 
 # Log the end of the command
 echo -e "\n $(date), SLURM Job ID $SLURM_JOB_ID: Finished, STATUS: $STATUS" >> $LOGFILE
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

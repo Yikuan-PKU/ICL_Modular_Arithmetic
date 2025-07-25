@@ -1,0 +1,25 @@
+
+ 2025年 01月 10日 星期五 21:59:46 CST, SLURM Job ID 25018787: Starting command:
+torchrun --nnodes=1 --nproc_per_node= --master_port=24353 icl_grokking.py --device='cuda' --mixed_precision=True --dtype='bfloat16' --num_workers=8 --n_tasks_rd=0 --n_tasks_pl=32 --parallelogram=True --n_var=2 --p=29 --base=29 --data_pct=1 --split_data=True --model='rope_decoder' --act_name='relu' --block_size=512 --n_embd=512 --n_layer=4 --n_head=4 --optim='adamw' --lr=1.5e-4 --wd=2.0 --dont_decay_embd=False --weight_tying=True --lr_decay='cosine' --clip=0.0 --steps=200000 --warmup_steps=10000 --steps_per_record=1000 --fake_restart_steps=5000 --n_point_per_row=32 --bs=1024 --eval_bs=1024 --seed=1 --data_seed=0 --reshuffle_step=1 --tqdm_bar=False --dist_backend='nccl' --n_ckpts=1 --n_val_step=16
+
+ 2025年 01月 10日 星期五 22:00:33 CST, SLURM Job ID 25018787: Finished, STATUS: FAILURE
+
+ 2025年 01月 10日 星期五 22:00:46 CST, SLURM Job ID 25018788: Starting command:
+torchrun --nnodes=1 --nproc_per_node= --master_port=24354 icl_grokking.py --device='cuda' --mixed_precision=True --dtype='bfloat16' --num_workers=8 --n_tasks_rd=0 --n_tasks_pl=32 --parallelogram=True --n_var=2 --p=29 --base=29 --data_pct=2 --split_data=True --model='rope_decoder' --act_name='relu' --block_size=512 --n_embd=512 --n_layer=4 --n_head=4 --optim='adamw' --lr=1.5e-4 --wd=2.0 --dont_decay_embd=False --weight_tying=True --lr_decay='cosine' --clip=0.0 --steps=200000 --warmup_steps=10000 --steps_per_record=1000 --fake_restart_steps=5000 --n_point_per_row=32 --bs=1024 --eval_bs=1024 --seed=1 --data_seed=0 --reshuffle_step=1 --tqdm_bar=False --dist_backend='nccl' --n_ckpts=1 --n_val_step=16
+
+ 2025年 01月 10日 星期五 22:00:53 CST, SLURM Job ID 25018788: Finished, STATUS: FAILURE
+
+ 2025年 01月 10日 星期五 22:01:16 CST, SLURM Job ID 25018789: Starting command:
+torchrun --nnodes=1 --nproc_per_node= --master_port=24355 icl_grokking.py --device='cuda' --mixed_precision=True --dtype='bfloat16' --num_workers=8 --n_tasks_rd=0 --n_tasks_pl=32 --parallelogram=True --n_var=2 --p=29 --base=29 --data_pct=3 --split_data=True --model='rope_decoder' --act_name='relu' --block_size=512 --n_embd=512 --n_layer=4 --n_head=4 --optim='adamw' --lr=1.5e-4 --wd=2.0 --dont_decay_embd=False --weight_tying=True --lr_decay='cosine' --clip=0.0 --steps=200000 --warmup_steps=10000 --steps_per_record=1000 --fake_restart_steps=5000 --n_point_per_row=32 --bs=1024 --eval_bs=1024 --seed=1 --data_seed=0 --reshuffle_step=1 --tqdm_bar=False --dist_backend='nccl' --n_ckpts=1 --n_val_step=16
+
+ 2025年 01月 10日 星期五 22:01:23 CST, SLURM Job ID 25018789: Finished, STATUS: FAILURE
+
+ 2025年 01月 10日 星期五 22:15:55 CST, SLURM Job ID 25018799: Starting command:
+torchrun --nnodes=1 --nproc_per_node= --master_port=24353 icl_grokking.py --device='cuda' --mixed_precision=True --dtype='bfloat16' --num_workers=8 --n_tasks_rd=1 --n_tasks_pl=0 --parallelogram=True --n_var=2 --p=29 --base=29 --data_pct=32 --split_data=True --model='rope_decoder' --act_name='relu' --block_size=512 --n_embd=512 --n_layer=4 --n_head=4 --optim='adamw' --lr=1.5e-4 --wd=2.0 --dont_decay_embd=False --weight_tying=True --lr_decay='cosine' --clip=0.0 --steps=200000 --warmup_steps=10000 --steps_per_record=1000 --fake_restart_steps=5000 --n_point_per_row=32 --bs=1024 --eval_bs=1024 --seed= --data_seed=0 --reshuffle_step=1 --tqdm_bar=False --dist_backend='nccl' --n_ckpts=1 --n_val_step=16
+
+ 2025年 01月 10日 星期五 22:16:09 CST, SLURM Job ID 25018799: Finished, STATUS: FAILURE
+
+ 2025年 01月 10日 星期五 22:20:14 CST, SLURM Job ID 25018801: Starting command:
+torchrun --nnodes=1 --nproc_per_node= --master_port=24353 icl_grokking.py --device='cuda' --mixed_precision=True --dtype='bfloat16' --num_workers=8 --n_tasks_rd=1 --n_tasks_pl=0 --parallelogram=True --n_var=2 --p=29 --base=29 --data_pct=32 --split_data=True --model='rope_decoder' --act_name='relu' --block_size=512 --n_embd=512 --n_layer=4 --n_head=4 --optim='adamw' --lr=1.5e-4 --wd=2.0 --dont_decay_embd=False --weight_tying=True --lr_decay='cosine' --clip=0.0 --steps=200000 --warmup_steps=10000 --steps_per_record=1000 --fake_restart_steps=5000 --n_point_per_row=32 --bs=1024 --eval_bs=1024 --seed= --data_seed=0 --reshuffle_step=1 --tqdm_bar=False --dist_backend='nccl' --n_ckpts=1 --n_val_step=16
+
+ 2025年 01月 10日 星期五 22:20:26 CST, SLURM Job ID 25018801: Finished, STATUS: FAILURE

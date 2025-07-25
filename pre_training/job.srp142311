@@ -1,16 +1,36 @@
 #!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64536
-#SBATCH --time=6:00:00
-#SBATCH --job-name=icl
-#SBATCH --error=err/%A_%a.err
-#SBATCH --output=out/%A_%a.out
-#SBATCH --gpus=a100:1
+#SBATCH -J nvi142311
+#SBATCH -p gpu_l40
+#SBATCH -N 1
+#SBATCH -o nvi142311_%j.out
+#SBATCH -e nvi142311_%j.err
+#SBATCH --no-requeue
+#SBATCH -A qi_g1
+#SBATCH --qos=qil40
+#SBATCH --gres=gpu:1
+#SBATCH --overcommit
+#SBATCH --mincpus=9
 
+
+#SBATCH -J submit
+#SBATCH -p cn-long
+#SBATCH -N 1
+#SBATCH -o submit_%j.out
+#SBATCH -e submit_%j.err
+#SBATCH --no-requeue
+#SBATCH -A qi_g1
+#SBATCH --qos=qicnl
+#SBATCH -c 1
+
+
+
+# Load environment and change to submission directory
 source ~/.bashrc
 cd $SLURM_SUBMIT_DIR
+
+# Print GPU and host information
+nvidia-smi
+hostname
 
 # Get the number of nodes and GPUs per node
 NNODES=$SLURM_NNODES
@@ -18,7 +38,7 @@ NPROC_PER_NODE=$SLURM_GPUS_ON_NODE
 MASTER_PORT=$1
 export OMP_NUM_THREADS=$((SLURM_GPUS_ON_NODE * 2))
 
-# HyperPMs
+# Hyperparameters
 P=$2
 DIM=$3
 DEPTH=$4
@@ -39,7 +59,6 @@ SEED=${11}
 LOGFILE="icl_history.log"
 
 # Build the command string
-# When torchrun, these arguments are then parsed inside the Python script using a library like argparse.
 CMD="torchrun --nnodes=$NNODES --nproc_per_node=$NPROC_PER_NODE --master_port=$MASTER_PORT \
 icl_grokking.py --device='cuda' --mixed_precision=True --dtype='bfloat16' --num_workers=8 \
 --n_tasks_rd=$NTASKS_RD --n_tasks_pl=$NTASKS_PL --parallelogram=True --n_var=$N_VAR --p=$P --base=$P --data_pct=$DATA_PCT --split_data=True \
