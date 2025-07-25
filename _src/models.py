@@ -6,7 +6,6 @@ import torch.nn.functional as F
 from torch import Tensor, LongTensor
 
 from rotary_embedding_torch import RotaryEmbedding
-
     
 class RoPETransformer(nn.Module):
     """
@@ -20,12 +19,12 @@ class RoPETransformer(nn.Module):
             dropout = nn.Dropout(args.dp),
             h = nn.ModuleList(Block(Attn_Module, args) for _ in range(args.n_layer)),
             ln_f = nn.LayerNorm(args.n_embd) if args.if_ln else nn.Identity()
-        ))
+        ))           #  A dictionary that groups the model's components.
         self.n_layer = args.n_layer
         self.lm_head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
         self.lm_head.g_scale = 1.
         
-        for id, m in self.named_modules():
+        for id, m in self.named_modules():    #  All linear layers (nn.Linear) are initialized using a normal distribution with a standard deviation of 0.02.
             if isinstance(m, (nn.Linear,)):
                 nn.init.normal_(m.weight, std=0.02)
                 if 'proj' in id:
@@ -35,7 +34,7 @@ class RoPETransformer(nn.Module):
             if isinstance(m, (nn.Embedding,)) and 'wte' in id:
                 nn.init.normal_(m.weight, std=0.02)
         if args.weight_tying is True:
-            self.lm_head.weight = self.transformer.wte.weight
+            self.lm_head.weight = self.transformer.wte.weight  #  If args.weight_tying is True, the weights of the lm_head layer are tied to the wte (word token embedding) layer, meaning both layers share the same weight matrix, improving parameter efficiency.
 
     def forward(self, idx: LongTensor) -> Tensor:
         device = idx.device
@@ -157,6 +156,8 @@ class RoPEFlashAttention(nn.Module):
         q = self.rotary_emb.rotate_queries_or_keys(q)
         k = self.rotary_emb.rotate_queries_or_keys(k)
         y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, scale=(q.size(-1))**self.power, dropout_p=self.dp if self.training else 0, is_causal=self.is_causal)
+
+
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.resid_dropout(self.o(y))
         return y, (q, k, v)

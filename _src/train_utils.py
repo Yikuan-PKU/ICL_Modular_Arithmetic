@@ -21,7 +21,8 @@ from tqdm import tqdm
 
 from _src.ddp_utils import save_ckpt_on_master, save_data_on_master
 from _src.scheduler import build_optim_sched
-
+# from ddp_utils import save_ckpt_on_master, save_data_on_master
+# from scheduler import build_optim_sched
 def max_digits(n, base):
     """Return the maximum number of digits for a given p and base"""
     if n < 0:
@@ -49,7 +50,7 @@ def val_loss_acc_icl(model: nn.Module, val_loader: Iterable, args, device, n_val
     correct_last = torch.zeros(args.n_tasks, device=device, dtype=args.dtype)
     num_valid_last = torch.zeros(args.n_tasks, device=device, dtype=args.dtype)
 
-    for t, (x, y) in enumerate(val_loader):
+    for t, (x, y) in enumerate(val_loader):   # x,y: (bs, ctx_length * dim)
         if t >= n_val_step:
             break
 
@@ -63,7 +64,7 @@ def val_loss_acc_icl(model: nn.Module, val_loader: Iterable, args, device, n_val
         if not math.isfinite(losses.mean().item()):
             return val_loss.data.cpu().float().numpy(), val_acc.data.cpu().float().numpy(), last_acc.data.cpu().float().numpy()
 
-        losses = losses.view(args.n_tasks, args.eval_bs // (args.n_tasks * args.ngpu_per_node), -1)
+        losses = losses.view(args.n_tasks, args.eval_bs // (args.n_tasks * args.ngpu_per_node), -1)    # batch_size=(bs * args.n_point_per_row // args.n_tasks) // args.ngpu_per_node
         val_loss += (args.dim * losses.mean(dim=(-2, -1)) / args.max_digits) # Take account for the ignored elements
 
         valid_predictions = torch.masked_select(torch.argmax(logits, dim=-1), valid_mask)
@@ -193,6 +194,7 @@ def train_tf_icl(compiled_model: nn.Module, model: nn.Module, train_iter: Iterab
 
                 with ctx:
                     logits = compiled_model(x)
+                    # Tokens with the label -100 are treated as padding and do not contribute to the loss.
                     losses = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1), ignore_index=-100, reduction='none')
                 loss = losses[losses > 0.0].mean()
 
@@ -203,6 +205,19 @@ def train_tf_icl(compiled_model: nn.Module, model: nn.Module, train_iter: Iterab
                     sys.exit(1)
 
                 # Gradient Step
+                # How the Gradient Scaler Works
+                # Forward Pass:
+                # The model computes the loss in FP16.
+                # The loss is scaled by the current scale factor to prevent underflow.
+                # Backward Pass:
+                # Gradients are computed in FP16.
+                # The gradients are unscaled before being used to update the model parameters.
+                # Overflow Handling:
+                # If any gradients overflow (become NaN or +/-inf), the scale factor is reduced.
+                # If no overflow occurs for growth_interval iterations, the scale factor is increased.
+                # Parameter Updates:
+                # The optimizer updates the model parameters using the unscaled gradients.
+
                 scaler.scale(loss).backward()
                 if args.clip > 0.0:
                     scaler.unscale_(optimizer)
@@ -212,13 +227,13 @@ def train_tf_icl(compiled_model: nn.Module, model: nn.Module, train_iter: Iterab
                 scaler.update()
                 scheduler.step()
 
-                # Compute Acc
+                # Compute Acc    inputs: (n_tasks, bs * ctx_length // n_tasks, dim)  to  #  (bs, ctx_length * dim)  in train_test_collate_fn
                 with torch.inference_mode():
-                    valid_mask = (y != -100) & (y < args.base)
-                    valid_predictions = torch.masked_select(torch.argmax(logits, dim=-1), valid_mask)
-                    valid_labels = torch.masked_select(y, valid_mask)
-                    correct_mask = (valid_predictions == valid_labels).view(args.n_tasks, -1)
-                    valid_mask = valid_mask.view(args.n_tasks, -1)
+                    valid_mask = (y != -100) & (y < args.base) # (bs*n_task, ctx_length * dim)
+                    valid_predictions = torch.masked_select(torch.argmax(logits, dim=-1), valid_mask) # (bs, ctx_length)
+                    valid_labels = torch.masked_select(y, valid_mask) # (bs*n_task, ctx_length)
+                    correct_mask = (valid_predictions == valid_labels).view(args.n_tasks, -1) # (args.n_tasks, bs * ctx_length//args.n_tasks)
+                    valid_mask = valid_mask.view(args.n_tasks, -1) # (args.n_tasks, bs * ctx_length* dim //args.n_tasks)
                     run_acc_last = (correct_mask[:, -1] / valid_mask[:, -1]).mean().item()
                     run_accs = correct_mask.sum(-1) / valid_mask.sum(-1)
                     run_acc = run_accs.mean().item()

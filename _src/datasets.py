@@ -34,10 +34,11 @@ class BaseTokenizer:
         self.base = base
         self.max_digits = int(math.log(modulo - 1, base)) + 1 if modulo - 1 > 0 else 1
         assert self.base <= self.modulo
+
         self.itos = self.get_tokens(self.base)
         self.stoi = dict([(s, i) for i, s in enumerate(self.itos)])
 
-    def _int_to_base(self, num: int, base: int) -> str:
+    def _int_to_base(self, num: int, base: int) -> str:   # 32 to "2,8"
         num = int(num)
         if num == 0:
             return ','.join('0' for _ in range(self.max_digits))
@@ -59,19 +60,19 @@ class BaseTokenizer:
             num = int(match.group())
             converted = self._int_to_base(num, self.base)
             if pos_hint is False:
-                return ''.join(converted)
+                return ''.join(converted)  # "2,8" to "28"
             else:
-                parts = converted.split(',')
+                parts = converted.split(',')   # "2,8" to ["2","8"]
                 tagged_digits = []
                 for i, digit in enumerate(parts):
-                    tagged_digits.extend([POSHINTS[i], digit])
-                return ''.join(tagged_digits)
+                    tagged_digits.extend([POSHINTS[i], digit])  # ["2","8"] to ["<a>","2","<b>","8"]
+                return ''.join(tagged_digits)  # ["<a>","2","<b>","8"] to "<a>2<b>8"
             
         converted_equation = re.sub(r'\d+', convert_and_split, equation)
+        # "<a>2<b>8" to ["<a>", "2", "<b>", "8"]
         splited_eq = re.findall(r'<\w+>|\d+|\*|\+|-|\/|=|<MOD>|<SOS>|<EOS>|<MASK>|<OP>|\S|,', converted_equation)
 
-
-        splited_eq = [part for part in splited_eq if part != ',']
+        splited_eq = [part for part in splited_eq if part != ',']  # get rid of the comma
         
         if reverse_target == True:
             start_index = splited_eq.index('=')
@@ -99,6 +100,10 @@ class BaseTokenizer:
         :param obj: the string or list of strings to convert
         :returns: a tensor of the token ids
         """
+
+        # (equations) s : f'<SOS> {eq} {target} <EOS>'
+        # split_equation() to [ '', '','' ,'']   .len() = 2+ max_digits*3  # when base = p, max_digits =1
+        # self._encode() to [ , , , ] dtype = longTensor
         encoded_eqs = [self._encode(self.split_equation(s, reverse_target = reverse_target, pos_hint = pos_hint)) for s in eqs]
         return torch.stack(encoded_eqs, dim=0) if show_seos == True else torch.stack(encoded_eqs, dim=0)[:, 1:-1]
         

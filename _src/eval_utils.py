@@ -126,8 +126,8 @@ def measure_grid_accloss_taskbatch(model: nn.Module, dataset:torch.Tensor, args,
     ctx = nullcontext() if 'mps' in args.device else torch.autocast(device_type=device_type, dtype=args.dtype, enabled=args.mixed_precision)
     
     model.eval()
-    
-    acc_record = np.zeros((dataset.shape[0], dataset.shape[1]), dtype=float)
+
+    acc_record = np.zeros((dataset.shape[0], dataset.shape[1]), dtype=float)    #dataset.shape() = [n_tasks, points, dim * (shot+1)]
     loss_record = np.zeros((dataset.shape[0], dataset.shape[1]), dtype=float)
     logit_record = np.zeros((dataset.shape[0], dataset.shape[1], args.p), dtype=float)
     pred_record = np.zeros((dataset.shape[0], dataset.shape[1]), dtype=float)
@@ -165,8 +165,8 @@ def measure_grid_accloss_examplebatch(model: nn.Module, dataset:torch.Tensor, ar
     ctx = nullcontext() if 'mps' in args.device else torch.autocast(device_type=device_type, dtype=args.dtype, enabled=args.mixed_precision)
     
     model.eval()
-    
-    acc_record = np.zeros((dataset.shape[0], dataset.shape[1]), dtype=float)
+
+    acc_record = np.zeros((dataset.shape[0], dataset.shape[1]), dtype=float)    #dataset.shape() = [n_tasks, points, dim * (shot+1)]
     loss_record = np.zeros((dataset.shape[0], dataset.shape[1]), dtype=float)
     logit_record = np.zeros((dataset.shape[0], dataset.shape[1], args.p), dtype=float)
     pred_record = np.zeros((dataset.shape[0], dataset.shape[1]), dtype=float)
