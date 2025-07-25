@@ -170,9 +170,9 @@ with torch.no_grad():
 
     ## set some args
     args.vocab_size = tokenizer_pre.__len__()
-    args.max_digits = tokenizer_pre.max_digits
-    args.max_digits = 2 * args.max_digits if args.pos_hint is True else args.max_digits
-    args.dim = args.max_digits * (len(pre_Ws[0]) + 1)
+    args.max_digits = tokenizer_pre.max_digits   # 1
+    args.max_digits = 2 * args.max_digits if args.pos_hint is True else args.max_digits   # 1
+    args.dim = args.max_digits * (len(pre_Ws[0]) + 1)      # 3
 
         
     ## Load model
@@ -219,21 +219,21 @@ with torch.no_grad():
         ids.append(id)
         assert len(ids) == len(set(ids))
         
-        example = torch.stack([grid_set_pre[:, id, : ]] * grid_set_pre.shape[1], dim=1 )
+        example = torch.stack([grid_set_pre[:, id, : ]] * grid_set_pre.shape[1], dim=1 )  #[n_tasks, points, dim]
         if shot == 1:
             previous_examples = example
         else:
-            previous_examples = torch.cat([previous_examples, example], dim=2)
+            previous_examples = torch.cat([previous_examples, example], dim=2)  #[n_tasks, points, dim * shot]
         
         ## grid for k-shot
-        grid = torch.cat( [torch.zeros_like(grid_set_pre)] * (shot+1), dim=2 )
+        grid = torch.cat( [torch.zeros_like(grid_set_pre)] * (shot+1), dim=2 )  #[n_tasks, points, dim * (shot+1)]
         if shot != 1:
             grid[:, :, : shot * args.dim] = previous_examples
         grid[:, :, (shot-1) * args.dim : shot * args.dim] = example
-        grid[:, :, shot * args.dim :] = grid_set_pre
+        grid[:, :, shot * args.dim :] = grid_set_pre                  # previous_examples + grid_set_pre
         
         ## change args.n_point_per_row according to the shot
-        args.n_point_per_row = shot+1
+        args.n_point_per_row = shot+1       # loop from 2 to total_shots+1
         
         ## evaluate k-shot
         acc, loss, logit, pred = measure_grid_accloss_examplebatch(model, grid, args, device, n_measure=args.n_measure)

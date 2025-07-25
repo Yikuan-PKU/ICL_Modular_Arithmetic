@@ -9,7 +9,7 @@ for path in paths_to_add:
 import argparse
 import random
 import torch
-
+import numpy as np
 from tqdm import tqdm
 import pickle
 
@@ -29,22 +29,22 @@ plt.rcParams.update({"font.size": 24})
 parser = argparse.ArgumentParser(description="Transformer ICL")
 # Basic setting
 parser.add_argument("--model_name", default="rope_decoder", type=str, help="Encoder or Decoder only Transformers")
-parser.add_argument("--device", default="cpu", type=str, help="device")
-parser.add_argument("--dtype", default="float32", type=str, help="dtype")
+parser.add_argument("--device", default="cuda", type=str, help="device")
+parser.add_argument("--dtype", default="bfloat16", type=str, help="dtype")
 parser.add_argument("--mixed_precision", default=False, type=str2bool, help="Automatic Mixed Precision")
 parser.add_argument("--seed", default=1, type=int, help="random seed")
-parser.add_argument("--num_workers", default=0, type=int, help="Workers for Datalodaer")
+parser.add_argument("--num_workers", default=8, type=int, help="Workers for Datalodaer")
 parser.add_argument("--world_size", default=1, type=int, help="World Size")
 parser.add_argument("--ddp", default=False, type=str2bool, help="DDP mode")
 parser.add_argument("--tqdm_bar", default=False, type=str2bool, help="Enable tqdm bar or not")
-parser.add_argument("--path_to_results", default="./", type=str, help="Path to save results")
+parser.add_argument("--path_to_results", default="../data/k-shot_infer/", type=str, help="Path to save results")
 
 # ddp Settings
 parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
 parser.add_argument('--dist_backend', default='nccl', help='gloo or nccl ...')
 
 # Model Settings
-parser.add_argument("--n_layer", default=4, type=int, help="Number of Transformer Blocks")
+parser.add_argument("--n_layer", default=6, type=int, help="Number of Transformer Blocks")
 parser.add_argument("--dp", default=0.0, type=float, help="Dropout Probability")
 parser.add_argument("--if_ln", default=True, type=str2bool, help="If use LayerNorm or Not")
 parser.add_argument("--n_embd", default=512, type=int, help="Embedding Dimension")
@@ -59,13 +59,13 @@ parser.add_argument("--weight_tying", default=False, type=str2bool, help="If use
 parser.add_argument("--dont_decay_embd", default=False, type=str2bool, help="If use weight tying")
 parser.add_argument("--s", default=0.0, type=float, help="s=0 for SP, 1 for muP like attention. Use 0.0 only for now.")
 
-# Data
-parser.add_argument("--n_tasks_pl", default=96, type=int, help="number of parallelogram tasks")
+# Data                                               # n_tasks_pl [2, 4, 8, 16, 32, 64, 128]
+parser.add_argument("--n_tasks_pl", default=2, type=int, help="number of parallelogram tasks")
 parser.add_argument("--n_tasks_rd", default=0, type=int, help="number of new random tasks")
 parser.add_argument("--parallelogram", default=True, type=str2bool, help="Perform parallelogram construction on task vectors or not")
 parser.add_argument("--n_var", default=2, type=int, help="number of variables, i.e. dimension of the problem")
 parser.add_argument("--data_seed", default=0, type=int, help="random seed for generating datasets")
-parser.add_argument("--data_pct", default=80.0, type=float, help="Data Percentage")
+parser.add_argument("--data_pct", default=60.0, type=float, help="Data Percentage")
 parser.add_argument("--task_pct", default=50.0, type=float, help="Task Percentage")
 parser.add_argument("--p", default=29, type=int, help="Modulo p")
 parser.add_argument("--base", default=29, type=int, help="Represent Numbers in base")
@@ -84,7 +84,7 @@ parser.add_argument("--fake_restart_steps", default=5000, type=int, help="Fake r
 
 # Optimization
 parser.add_argument("--optim", default="adamw", type=str, help="Optimizer: adamw or sgd")
-parser.add_argument("--bs", default=1536, type=int, help="Batchsize")
+parser.add_argument("--bs", default=1024, type=int, help="Batchsize")
 parser.add_argument("--eval_bs", default=1, type=int, help="Batchsize for Evaluation")
 parser.add_argument("--lr", default=1.50e-4, type=float, help="Learning Rate")
 parser.add_argument("--n_cycles", default=1, type=int, help="Cycles of scheduler, only use 1 cycle.")
@@ -113,7 +113,7 @@ parser.add_argument("--train_set", default=False, type=str2bool, help="Use train
 parser.add_argument("--n_measure", default=8, type=int, help="How many batches to average.")
 parser.add_argument("--g_seed", default=2, type=int, help="random generator seed")
 parser.add_argument("--savefig", default=False, type=str2bool, help="Save Figure")
-parser.add_argument("--total_shots", default=2, type=int, help="number of in-context examples")
+parser.add_argument("--total_shots", default=31, type=int, help="number of in-context examples")
 
 args = parser.parse_args()
 assert args.show_seos == False
@@ -136,6 +136,11 @@ else:
     torch.set_float32_matmul_precision('high')
     args.dtype = torch.float32
 
+# Setup seed
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
+random.seed(args.seed)
+
 
 with torch.no_grad():
     
@@ -157,7 +162,7 @@ with torch.no_grad():
 
 
     ## Generate out-of-distibution tasks
-
+    args.max_ood_tasks = 256
     ood_Ws = get_ood_lists(pre_Ws, args)
     ood_Ws = [tuple(W) for W in ood_Ws]
     args.n_ood_tasks = len(ood_Ws)
@@ -170,14 +175,15 @@ with torch.no_grad():
 
     ## set some args
     args.vocab_size = tokenizer_pre.__len__()
-    args.max_digits = tokenizer_pre.max_digits
-    args.max_digits = 2 * args.max_digits if args.pos_hint is True else args.max_digits
-    args.dim = args.max_digits * (len(pre_Ws[0]) + 1)
+    args.max_digits = tokenizer_pre.max_digits   # 1
+    args.max_digits = 2 * args.max_digits if args.pos_hint is True else args.max_digits   # 1
+    args.dim = args.max_digits * (len(pre_Ws[0]) + 1)      # 3
 
         
     ## Load model
+    ckpt_prefix = f"../ckpts/noembd{args.dont_decay_embd}_parale{args.parallelogram}_pltask{args.n_tasks}"
+    ckpt_path = ckpt_prefix + f'_{args.model_name}_p{args.p}_base{args.base}_row{32}_ntask{args.n_tasks}_nvar{args.n_var}_dsplit{args.split_data}_dfrac{args.data_pct:.1f}_{args.act_name}_n{args.n_embd}_h{args.n_head}_d{args.n_layer}_lctx{args.block_size}_I{args.seed}_dI{args.data_seed}_{args.optim}_bs{args.bs}_t{args.steps:d}_T{args.steps:d}_Tw{args.warmup_steps:d}_lr{args.lr:0.2e}_wd{args.wd:.2e}.pth'
 
-    ckpt_path = "./path/to/checkpoint/file.pth"
     
     if args.model_name == 'rope_decoder':
         assert args.s == 0.0
@@ -213,26 +219,33 @@ with torch.no_grad():
         iterator = range(1, args.total_shots+1)
 
     for shot in iterator:
+        while True:
+            id = random.randint(0, grid_set_pre.shape[1] - 1)  # Generate a random index
+            ids.append(id)  # Add the index to the list
+            if len(ids) == len(set(ids)):  # Check if all IDs are unique
+                break  # Exit the loop if the condition is satisfied
+            else:
+                ids.pop()  # Remove the duplicate ID and try again
+
+        # id = random.randint(0, grid_set_pre.shape[1]-1)
+        # ids.append(id)
+        # assert len(ids) == len(set(ids))
         
-        id = random.randint(0, grid_set_pre.shape[1]-1)
-        ids.append(id)
-        assert len(ids) == len(set(ids))
-        
-        example = torch.stack([grid_set_pre[:, id, : ]] * grid_set_pre.shape[1], dim=1 )
+        example = torch.stack([grid_set_pre[:, id, : ]] * grid_set_pre.shape[1], dim=1 )  #[n_tasks, points, dim]
         if shot == 1:
             previous_examples = example
         else:
-            previous_examples = torch.cat([previous_examples, example], dim=2)
+            previous_examples = torch.cat([previous_examples, example], dim=2)  #[n_tasks, points, dim * shot]
         
         ## grid for k-shot
-        grid = torch.cat( [torch.zeros_like(grid_set_pre)] * (shot+1), dim=2 )
+        grid = torch.cat( [torch.zeros_like(grid_set_pre)] * (shot+1), dim=2 )  #[n_tasks, points, dim * (shot+1)]
         if shot != 1:
             grid[:, :, : shot * args.dim] = previous_examples
         grid[:, :, (shot-1) * args.dim : shot * args.dim] = example
-        grid[:, :, shot * args.dim :] = grid_set_pre
+        grid[:, :, shot * args.dim :] = grid_set_pre                  # previous_examples + grid_set_pre
         
         ## change args.n_point_per_row according to the shot
-        args.n_point_per_row = shot+1
+        args.n_point_per_row = shot+1       # loop from 2 to total_shots+1
         
         ## evaluate k-shot
         acc, loss, logit, pred = measure_grid_accloss_taskbatch(model, grid, args, device, n_measure=args.n_measure)
@@ -315,6 +328,6 @@ data['losses_ood'] = losses_ood
 data['logits_ood'] = logits_ood
 data['preds_ood'] = preds_ood
 
-filename = f"grid_{args.n_layer}layer_{args.total_shots}-shot_set{args.mask_set_id}.pickle"
+filename = f"grid_{args.n_layer}layer_{args.total_shots}-shot_set{args.mask_set_id}_noembd{args.dont_decay_embd}_parale{args.parallelogram}_pltask{args.n_tasks}_{args.model_name}_p{args.p}_base{args.base}_row{32}_ntask{args.n_tasks}_nvar{args.n_var}_dsplit{args.split_data}_dfrac{args.data_pct:.1f}_{args.act_name}_n{args.n_embd}_h{args.n_head}_d{args.n_layer}_lctx{args.block_size}_I{args.seed}_dI{args.data_seed}_{args.optim}_bs{args.bs}_t{args.steps:d}_T{args.steps:d}_Tw{args.warmup_steps:d}_lr{args.lr:0.2e}_wd{args.wd:.2e}.pickle"
 with open(args.path_to_results + filename, 'wb') as f:
     pickle.dump(data, f)
