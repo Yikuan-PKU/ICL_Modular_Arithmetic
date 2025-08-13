@@ -1,10 +1,19 @@
+import argparse
 import pickle
 from pathlib import Path
 from typing import Any
 
 from datasets import Dataset
 
+from ICL import settings
 from ICL.datasets.RHM import RandomHierarchyModel
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Extract word surprisal across different training steps.")
+    parser.add_argument("--resume", action="store_true", help="Resume from the existing checkpoint")
+    return parser.parse_args()
 
 
 def generate_raw_rhm_dataset(
@@ -17,23 +26,7 @@ def generate_raw_rhm_dataset(
     seed_sample: int = 42,
     save_intermediate: bool = True,
 ) -> tuple[Dataset, dict[str, Any]]:
-    """Generate raw RHM dataset for multiple hierarchical configurations.
-
-    Args:
-        config_list: List of (L, m) tuples where L=hierarchy depth, m=multiplicity
-        samples_per_config: Number of samples to generate per configuration
-        output_dir: Directory to save the raw dataset
-        vocab_size: Vocabulary size for RHM (default: 32)
-        num_classes: Number of classes for RHM (default: 10)
-        tuple_size: Size of low-level representations (default: 2)
-        seed_sample: Seed for sample generation (default: 42)
-        save_intermediate: Whether to save intermediate results per config
-
-    Returns:
-        dataset: HuggingFace Dataset containing all raw sequences
-        metadata: Dictionary with comprehensive metadata
-
-    """
+    """Generate raw RHM dataset for multiple hierarchical configurations."""
     print("=" * 60)
     print("GENERATING RAW RHM DATASET")
     print("=" * 60)
@@ -235,9 +228,9 @@ def generate_raw_rhm_dataset(
     return dataset, metadata
 
 
-# Example usage function
 def generate_example_dataset():
     """Generate an example RHM dataset with multiple configurations"""
+    args = parse_args()
     # Define hierarchical configurations to test
     config_list = [
         (2, 2),  # Shallow, low multiplicity
@@ -251,7 +244,7 @@ def generate_example_dataset():
     dataset, metadata = generate_raw_rhm_dataset(
         config_list=config_list,
         samples_per_config=1000,
-        output_dir="./raw_rhm_data",
+        output_dir=settings.PATH.train_dir / "raw",
         vocab_size=32,
         num_classes=10,
         save_intermediate=True,

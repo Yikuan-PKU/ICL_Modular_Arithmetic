@@ -1,13 +1,14 @@
+"""RHM Training Configuration with Version Compatibility"""
+
 import json
 import logging
 import time
+import typing as t
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import torch
-import wandb
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -25,11 +26,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RHMTrainingConfig:
-    """Configuration for RHM training"""
+    """Configuration for RHM training with version compatibility."""
 
     # Model configuration
-    model_name_or_path: str | None = None  # For loading pretrained models
-    vocab_size: int = 37  # 32 + 4 special tokens + 1 for safety
+    model_name_or_path: str | None = None
+    vocab_size: int = 37
     hidden_size: int = 512
     num_hidden_layers: int = 6
     num_attention_heads: int = 8
@@ -37,7 +38,7 @@ class RHMTrainingConfig:
     max_position_embeddings: int = 2048
 
     # Training configuration
-    task_name: str = "clm"  # 'clm' or 'mlm'
+    task_name: str = "clm"
     output_dir: str = "./rhm_training_output"
     num_train_epochs: int = 10
     per_device_train_batch_size: int = 16
@@ -49,7 +50,7 @@ class RHMTrainingConfig:
     lr_scheduler_type: str = "linear"
 
     # Checkpoint configuration
-    save_strategy: str = "steps"  # 'steps', 'epoch', 'no'
+    save_strategy: str = "steps"
     save_steps: int = 500
     save_total_limit: int = 5
     load_best_model_at_end: bool = True
@@ -57,7 +58,7 @@ class RHMTrainingConfig:
     greater_is_better: bool = False
 
     # Evaluation configuration
-    evaluation_strategy: str = "steps"  # 'steps', 'epoch', 'no'
+    evaluation_strategy: str = "steps"
     eval_steps: int = 500
     eval_accumulation_steps: int | None = None
 
@@ -85,7 +86,7 @@ class RHMTrainingConfig:
     # Data configuration
     dataloader_num_workers: int = 0
     dataloader_pin_memory: bool = True
-    remove_unused_columns: bool = False
+    remove_unused_columns: bool = True
 
     # Hierarchical analysis
     track_hierarchical_metrics: bool = True
@@ -95,53 +96,66 @@ class RHMTrainingConfig:
     seed: int = 42
 
     def to_training_arguments(self) -> TrainingArguments:
-        """Convert to HuggingFace TrainingArguments"""
-        return TrainingArguments(
-            output_dir=self.output_dir,
-            num_train_epochs=self.num_train_epochs,
-            per_device_train_batch_size=self.per_device_train_batch_size,
-            per_device_eval_batch_size=self.per_device_eval_batch_size,
-            gradient_accumulation_steps=self.gradient_accumulation_steps,
-            learning_rate=self.learning_rate,
-            weight_decay=self.weight_decay,
-            warmup_ratio=self.warmup_ratio,
-            lr_scheduler_type=self.lr_scheduler_type,
-            save_strategy=self.save_strategy,
-            save_steps=self.save_steps,
-            save_total_limit=self.save_total_limit,
-            load_best_model_at_end=self.load_best_model_at_end,
-            metric_for_best_model=self.metric_for_best_model,
-            greater_is_better=self.greater_is_better,
-            evaluation_strategy=self.evaluation_strategy,
-            eval_steps=self.eval_steps,
-            eval_accumulation_steps=self.eval_accumulation_steps,
-            logging_strategy=self.logging_strategy,
-            logging_steps=self.logging_steps,
-            report_to=self.report_to,
-            run_name=self.run_name,
-            adam_beta1=self.adam_beta1,
-            adam_beta2=self.adam_beta2,
-            adam_epsilon=self.adam_epsilon,
-            max_grad_norm=self.max_grad_norm,
-            fp16=self.fp16,
-            bf16=self.bf16,
-            dataloader_num_workers=self.dataloader_num_workers,
-            dataloader_pin_memory=self.dataloader_pin_memory,
-            remove_unused_columns=self.remove_unused_columns,
-            seed=self.seed,
-        )
+        """Convert to HuggingFace TrainingArguments with version compatibility."""
+        # Create arguments dict without problematic parameters
+        training_args_dict = {
+            "output_dir": self.output_dir,
+            "num_train_epochs": self.num_train_epochs,
+            "per_device_train_batch_size": self.per_device_train_batch_size,
+            "per_device_eval_batch_size": self.per_device_eval_batch_size,
+            "gradient_accumulation_steps": self.gradient_accumulation_steps,
+            "learning_rate": self.learning_rate,
+            "weight_decay": self.weight_decay,
+            "warmup_ratio": self.warmup_ratio,
+            "lr_scheduler_type": self.lr_scheduler_type,
+            "save_strategy": self.save_strategy,
+            "save_steps": self.save_steps,
+            "save_total_limit": self.save_total_limit,
+            "load_best_model_at_end": self.load_best_model_at_end,
+            "metric_for_best_model": self.metric_for_best_model,
+            "greater_is_better": self.greater_is_better,
+            "evaluation_strategy": self.evaluation_strategy,
+            "eval_steps": self.eval_steps,
+            "eval_accumulation_steps": self.eval_accumulation_steps,
+            "logging_strategy": self.logging_strategy,
+            "logging_steps": self.logging_steps,
+            "report_to": self.report_to,
+            "run_name": self.run_name,
+            "adam_beta1": self.adam_beta1,
+            "adam_beta2": self.adam_beta2,
+            "adam_epsilon": self.adam_epsilon,
+            "max_grad_norm": self.max_grad_norm,
+            "fp16": self.fp16,
+            "bf16": self.bf16,
+            "dataloader_num_workers": self.dataloader_num_workers,
+            "dataloader_pin_memory": self.dataloader_pin_memory,
+            "remove_unused_columns": self.remove_unused_columns,
+            "seed": self.seed,
+        }
+
+        # Only add accelerator_config if it's supported in this version
+        try:
+            # Test if accelerator_config is supported
+            TrainingArguments(output_dir="test", accelerator_config=None)
+            training_args_dict["accelerator_config"] = None
+            logger.info("Using accelerator_config=None for compatibility")
+        except TypeError:
+            # accelerator_config not supported in this version
+            logger.info("accelerator_config not supported in this transformers version - skipping")
+
+        return TrainingArguments(**training_args_dict)
 
 
 class HierarchicalMetricsCallback(TrainerCallback):
-    """Callback to track hierarchical-specific metrics"""
+    """Callback to track hierarchical-specific metrics."""
 
-    def __init__(self, config: RHMTrainingConfig, dataloader_metadata: dict[str, Any]):
+    def __init__(self, config: RHMTrainingConfig, dataloader_metadata: dict[str, t.Any]):
         self.config = config
         self.dataloader_metadata = dataloader_metadata
-        self.hierarchical_metrics = []
+        self.hierarchical_metrics: list[dict[str, t.Any]] = []
 
     def on_evaluate(self, args, state, control, model, eval_dataloader, **kwargs):
-        """Called after evaluation"""
+        """Called after evaluation."""
         if not self.config.track_hierarchical_metrics:
             return
 
@@ -149,43 +163,50 @@ class HierarchicalMetricsCallback(TrainerCallback):
             metrics = self._compute_hierarchical_metrics(model, eval_dataloader)
             self.hierarchical_metrics.append({"step": state.global_step, "epoch": state.epoch, "metrics": metrics})
 
-            # Log to wandb if available
-            if "wandb" in self.config.report_to:
-                wandb.log({f"hierarchical/{k}": v for k, v in metrics.items()}, step=state.global_step)
+            # Log metrics
+            logger.info(f"Hierarchical metrics at step {state.global_step}: {metrics}")
 
     def _compute_hierarchical_metrics(self, model, dataloader) -> dict[str, float]:
-        """Compute metrics specific to hierarchical configurations"""
+        """Compute metrics specific to hierarchical configurations."""
         model.eval()
 
-        config_losses = {}
-        config_counts = {}
+        config_losses: dict[str, float] = {}
+        config_counts: dict[str, int] = {}
 
         with torch.no_grad():
             for batch in dataloader:
-                # Get predictions
-                if hasattr(batch, "to"):
-                    batch = batch.to(model.device)
+                # Move batch to device
+                device = next(model.parameters()).device
 
-                outputs = model(**{k: v for k, v in batch.items() if k in ["input_ids", "attention_mask", "labels"]})
+                # Prepare batch for model
+                model_inputs = {}
+                for key in ["input_ids", "attention_mask", "labels"]:
+                    if key in batch:
+                        if hasattr(batch[key], "to"):
+                            model_inputs[key] = batch[key].to(device)
+                        else:
+                            model_inputs[key] = batch[key]
 
+                outputs = model(**model_inputs)
                 losses = outputs.loss
 
-                # Group by configuration
-                for i, (L, m) in enumerate(zip(batch["config_L"], batch["config_m"], strict=False)):
-                    config_key = f"L{L}_m{m}"
+                # Group by configuration if available
+                if "config_L" in batch and "config_m" in batch:
+                    for i, (L, m) in enumerate(zip(batch["config_L"], batch["config_m"], strict=False)):
+                        config_key = f"L{L}_m{m}"
 
-                    if config_key not in config_losses:
-                        config_losses[config_key] = 0.0
-                        config_counts[config_key] = 0
+                        if config_key not in config_losses:
+                            config_losses[config_key] = 0.0
+                            config_counts[config_key] = 0
 
-                    # Individual sample loss (approximation)
-                    if len(losses.shape) == 0:  # Scalar loss
-                        sample_loss = losses.item()
-                    else:
-                        sample_loss = losses[i].item() if len(losses) > i else losses.mean().item()
+                        # Individual sample loss (approximation)
+                        if len(losses.shape) == 0:  # Scalar loss
+                            sample_loss = losses.item()
+                        else:
+                            sample_loss = losses[i].item() if len(losses) > i else losses.mean().item()
 
-                    config_losses[config_key] += sample_loss
-                    config_counts[config_key] += 1
+                        config_losses[config_key] += sample_loss
+                        config_counts[config_key] += 1
 
         # Compute average losses per configuration
         hierarchical_metrics = {}
@@ -198,15 +219,15 @@ class HierarchicalMetricsCallback(TrainerCallback):
 
 
 class CheckpointCallback(TrainerCallback):
-    """Enhanced checkpoint callback with hierarchical metadata"""
+    """Enhanced checkpoint callback with hierarchical metadata."""
 
-    def __init__(self, config: RHMTrainingConfig, dataloader_metadata: dict[str, Any]):
+    def __init__(self, config: RHMTrainingConfig, dataloader_metadata: dict[str, t.Any]):
         self.config = config
         self.dataloader_metadata = dataloader_metadata
-        self.checkpoint_history = []
+        self.checkpoint_history: list[dict[str, t.Any]] = []
 
     def on_save(self, args, state, control, model, tokenizer, **kwargs):
-        """Called when saving checkpoint"""
+        """Called when saving checkpoint."""
         checkpoint_dir = Path(args.output_dir) / f"checkpoint-{state.global_step}"
 
         # Save enhanced metadata
@@ -226,6 +247,7 @@ class CheckpointCallback(TrainerCallback):
 
         # Save metadata
         metadata_path = checkpoint_dir / "training_metadata.json"
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
         with metadata_path.open("w") as f:
             json.dump(enhanced_metadata, f, indent=2, default=str)
 
@@ -243,10 +265,14 @@ class CheckpointCallback(TrainerCallback):
 
 
 class RHMTrainer:
-    """Main trainer class for RHM models"""
+    """Main trainer class for RHM models with version compatibility."""
 
     def __init__(
-        self, training_config: RHMTrainingConfig, train_dataloader, eval_dataloader, dataloader_metadata: dict[str, Any]
+        self,
+        training_config: RHMTrainingConfig,
+        train_dataloader,
+        eval_dataloader,
+        dataloader_metadata: dict[str, t.Any],
     ):
         """Initialize RHM trainer.
 
@@ -275,15 +301,16 @@ class RHMTrainer:
         # Set up callbacks
         self.callbacks = self._setup_callbacks()
 
-        # Initialize trainer
-        self.trainer = None
+        # Initialize trainer placeholder
+        self.trainer: Trainer | None = None
 
         logger.info(f"RHM Trainer initialized for task: {self.config.task_name}")
         logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
-        logger.info(f"Training on device: {torch.cuda.get_device_name() if torch.cuda.is_available() else 'CPU'}")
+        device_name = torch.cuda.get_device_name() if torch.cuda.is_available() else "CPU"
+        logger.info(f"Training on device: {device_name}")
 
     def _create_model(self):
-        """Create model based on task and configuration"""
+        """Create model based on task and configuration."""
         # Create model configuration
         if self.config.model_name_or_path:
             # Load from existing model
@@ -339,7 +366,7 @@ class RHMTrainer:
         return model
 
     def _setup_callbacks(self) -> list[TrainerCallback]:
-        """Set up training callbacks"""
+        """Set up training callbacks."""
         callbacks = []
 
         # Hierarchical metrics callback
@@ -360,8 +387,8 @@ class RHMTrainer:
 
         return callbacks
 
-    def train(self) -> dict[str, Any]:
-        """Run training"""
+    def train(self) -> dict[str, t.Any]:
+        """Run training with improved error handling."""
         logger.info("Starting training...")
         logger.info(f"Task: {self.config.task_name}")
         logger.info(f"Training samples: {len(self.train_dataloader.dataset)}")
@@ -373,13 +400,13 @@ class RHMTrainer:
         # Save initial configuration
         self._save_training_setup()
 
-        # Initialize trainer
+        # Initialize trainer with better error handling
         self.trainer = Trainer(
             model=self.model,
             args=self.training_args,
             train_dataset=self.train_dataloader.dataset,
             eval_dataset=self.eval_dataloader.dataset,
-            data_collator=self.train_dataloader.collate_fn,
+            data_collator=getattr(self.train_dataloader, "collate_fn", None),
             callbacks=self.callbacks,
         )
 
@@ -417,6 +444,7 @@ class RHMTrainer:
             # Save error information
             error_info = {
                 "error": str(e),
+                "error_type": type(e).__name__,
                 "timestamp": datetime.now().isoformat(),
                 "training_config": self.config.__dict__,
                 "dataloader_metadata": self.dataloader_metadata,
@@ -428,19 +456,19 @@ class RHMTrainer:
 
             raise
 
-    def _save_training_setup(self):
-        """Save complete training setup for reproducibility"""
+    def _save_training_setup(self) -> None:
+        """Save complete training setup for reproducibility."""
         setup_info = {
             "training_config": self.config.__dict__,
             "dataloader_metadata": self.dataloader_metadata,
-            "model_config": self.model.config.to_dict()
-            if hasattr(self.model.config, "to_dict")
-            else str(self.model.config),
+            "model_config": (
+                self.model.config.to_dict() if hasattr(self.model.config, "to_dict") else str(self.model.config)
+            ),
             "training_arguments": self.training_args.to_dict(),
             "device_info": {
                 "cuda_available": torch.cuda.is_available(),
                 "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
-                "cuda_device_name": torch.cuda.get_device_name() if torch.cuda.is_available() else None,
+                "cuda_device_name": (torch.cuda.get_device_name() if torch.cuda.is_available() else None),
             },
             "pytorch_version": torch.__version__,
             "timestamp": datetime.now().isoformat(),

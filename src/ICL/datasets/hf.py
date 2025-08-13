@@ -10,6 +10,8 @@ import torch
 from datasets import Dataset
 from torch.utils.data import DataLoader
 
+from ICL.datasets.gen import UnifiedRHMDataset
+
 
 class RHMDataLoaderFactory:
     """Unified factory for creating task-specific DataLoaders for RHM datasets."""
@@ -27,7 +29,8 @@ class RHMDataLoaderFactory:
 
         # Load unified dataset
         print("Loading unified RHM dataset...")
-        self.unified_dataset = load_unified_dataset(str(self.dataset_path))
+
+        self.unified_dataset = UnifiedRHMDataset(str(self.dataset_path))
         self.unified_dataset.print_summary()
 
     def create_dataloader(
@@ -534,9 +537,9 @@ class CLMProcessor(BaseTaskProcessor):
                 "input_ids": input_ids_padded,
                 "attention_mask": attention_mask,
                 "labels": labels_padded,
-                "task_ids": [item["task_id"] for item in batch],
-                "config_L": [item["config_L"] for item in batch],
-                "config_m": [item["config_m"] for item in batch],
+                # "task_ids": [item["task_id"] for item in batch],
+                # "config_L": [item["config_L"] for item in batch],
+                # "config_m": [item["config_m"] for item in batch],
             }
 
         return collate_fn
@@ -693,9 +696,9 @@ class MLMProcessor(BaseTaskProcessor):
                 "input_ids": input_ids_padded,
                 "attention_mask": attention_mask,
                 "labels": labels_padded,
-                "task_ids": [item["task_id"] for item in batch],
-                "config_L": [item["config_L"] for item in batch],
-                "config_m": [item["config_m"] for item in batch],
+                # "task_ids": [item["task_id"] for item in batch],
+                # "config_L": [item["config_L"] for item in batch],
+                # "config_m": [item["config_m"] for item in batch],
             }
 
         return collate_fn

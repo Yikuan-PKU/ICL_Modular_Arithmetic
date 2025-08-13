@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from ICL import setting
+from ICL import settings
 from ICL.datasets.hf import RHMDataLoaderFactory
 from ICL.train.model import RHMTrainer, RHMTrainingConfig
 
@@ -32,16 +32,16 @@ def create_trainer(
 def main_training_example():
     """Example of how to use the training framework"""
     # Initialize factory and create DataLoaders
-    factory = RHMDataLoaderFactory(setting.PATH.train / "raw_rhm_data", vocab_size=32)
+    factory = RHMDataLoaderFactory(settings.PATH.train_dir / "raw", vocab_size=32)
 
     # Create train DataLoader
     train_dataloader, train_metadata = factory.create_dataloader(
-        task_name="clm", batch_size=16, max_length=1024, batching_strategy="config_then_length", seed=42
+        task_name="mlm", batch_size=16, max_length=1024, batching_strategy="config_then_length", seed=42
     )
 
     # Create eval DataLoader (subset for faster evaluation)
     eval_dataloader, eval_metadata = factory.create_dataloader(
-        task_name="clm",
+        task_name="mlm",
         batch_size=32,
         max_length=1024,
         batching_strategy="config_then_length",
@@ -51,8 +51,8 @@ def main_training_example():
 
     # Create training configuration
     training_config = RHMTrainingConfig(
-        task_name="clm",
-        output_dir=setting.PATH.model / "rhm_clm_training",
+        task_name="mlm",
+        output_dir=settings.PATH.model_dir / "rhm_mlm_training",
         num_train_epochs=5,
         per_device_train_batch_size=16,
         per_device_eval_batch_size=32,
@@ -66,7 +66,7 @@ def main_training_example():
         track_hierarchical_metrics=True,
         early_stopping=True,
         early_stopping_patience=3,
-        run_name=f"rhm_clm_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        run_name=f"rhm_mlm_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         seed=42,
     )
 
