@@ -1,6 +1,6 @@
+import argparse
 import logging
 from datetime import datetime
-from typing import Any
 
 from ICL import settings
 from ICL.datasets.hf import RHMDataLoaderFactory
@@ -11,27 +11,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def create_trainer(
-    training_config: RHMTrainingConfig, train_dataloader, eval_dataloader, dataloader_metadata: dict[str, Any]
-) -> RHMTrainer:
-    """Convenience function to create an RHM trainer.
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Train models on synthetic dataset.")
+    parser.add_argument("--model_type", action="store_true", help="Resume from the existing checkpoint")
 
-    Args:
-        training_config: Training configuration
-        train_dataloader: Training DataLoader
-        eval_dataloader: Evaluation DataLoader
-        dataloader_metadata: Metadata from DataLoader creation
-
-    Returns:
-        RHMTrainer instance
-
-    """
-    return RHMTrainer(training_config, train_dataloader, eval_dataloader, dataloader_metadata)
+    return parser.parse_args()
 
 
-def main_training_example():
+def main():
     """Example of how to use the training framework"""
     # Initialize factory and create DataLoaders
+    args = parse_args()
     factory = RHMDataLoaderFactory(settings.PATH.train_dir / "raw", vocab_size=32)
 
     # Create train DataLoader
@@ -71,7 +62,7 @@ def main_training_example():
     )
 
     # Create and run trainer
-    trainer = create_trainer(
+    trainer = RHMTrainer(
         training_config=training_config,
         train_dataloader=train_dataloader,
         eval_dataloader=eval_dataloader,
@@ -86,4 +77,4 @@ def main_training_example():
 
 
 if __name__ == "__main__":
-    main_training_example()
+    main()
