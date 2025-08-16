@@ -538,10 +538,12 @@ class TransferEvaluationGenerator:
 
                     config_data.append(model_data)
 
-                condition2_data[f"L{test_config[0]}_m{test_config[1]}"] = config_data
+                # Use string key for JSON compatibility
+                config_key = self._format_config_key(test_config)
+                condition2_data[config_key] = config_data
 
                 if save_intermediate:
-                    config_dir = output_dir / "intermediate" / "depth_transfer" / f"L{test_config[0]}_m{test_config[1]}"
+                    config_dir = output_dir / "intermediate" / "depth_transfer" / config_key
                     config_dir.mkdir(parents=True, exist_ok=True)
                     with open(config_dir / "config_data.pkl", "wb") as f:
                         pickle.dump(config_data, f)
@@ -582,12 +584,12 @@ class TransferEvaluationGenerator:
 
                     config_data.append(model_data)
 
-                condition3_data[f"L{test_config[0]}_m{test_config[1]}"] = config_data
+                # Use string key for JSON compatibility
+                config_key = self._format_config_key(test_config)
+                condition3_data[config_key] = config_data
 
                 if save_intermediate:
-                    config_dir = (
-                        output_dir / "intermediate" / "synonym_transfer" / f"L{test_config[0]}_m{test_config[1]}"
-                    )
+                    config_dir = output_dir / "intermediate" / "synonym_transfer" / config_key
                     config_dir.mkdir(parents=True, exist_ok=True)
                     with open(config_dir / "config_data.pkl", "wb") as f:
                         pickle.dump(config_data, f)
@@ -628,10 +630,12 @@ class TransferEvaluationGenerator:
 
                     config_data.append(model_data)
 
-                condition4_data[f"L{test_config[0]}_m{test_config[1]}"] = config_data
+                # Use string key for JSON compatibility
+                config_key = self._format_config_key(test_config)
+                condition4_data[config_key] = config_data
 
                 if save_intermediate:
-                    config_dir = output_dir / "intermediate" / "full_transfer" / f"L{test_config[0]}_m{test_config[1]}"
+                    config_dir = output_dir / "intermediate" / "full_transfer" / config_key
                     config_dir.mkdir(parents=True, exist_ok=True)
                     with open(config_dir / "config_data.pkl", "wb") as f:
                         pickle.dump(config_data, f)
@@ -648,7 +652,9 @@ class TransferEvaluationGenerator:
             dataset["verification_results"]["full_transfer"] = {"error": str(e)}
 
         # Save complete dataset
-        dataset_serializable = self._make_json_serializable(dataset)
+        # Convert tuple keys to strings before JSON serialization
+        dataset_for_json = self._convert_tuple_keys_to_strings(dataset)
+        dataset_serializable = self._make_json_serializable(dataset_for_json)
 
         output_file = output_dir / "verified_transfer_evaluation_dataset.json"
         with open(output_file, "w") as f:
@@ -745,3 +751,28 @@ class TransferEvaluationGenerator:
             return str(obj)
         except Exception:
             return f"<non-serializable: {type(obj).__name__}>"
+
+    def _convert_tuple_keys_to_strings(self, obj: t.Any) -> t.Any:
+        """Convert tuple keys in nested dictionaries to string format for JSON serialization."""
+        if isinstance(obj, dict):
+            new_dict = {}
+            for k, v in obj.items():
+                # Convert tuple keys to string format
+                if isinstance(k, tuple):
+                    if len(k) == 2:  # (L, m) format
+                        str_key = f"L{k[0]}_m{k[1]}"
+                    else:
+                        str_key = "_".join(map(str, k))
+                else:
+                    str_key = str(k)
+
+                new_dict[str_key] = self._convert_tuple_keys_to_strings(v)
+            return new_dict
+        if isinstance(obj, (list, tuple)):
+            return [self._convert_tuple_keys_to_strings(item) for item in obj]
+        return obj
+
+    def _format_config_key(self, config: ConfigTuple) -> str:
+        """Format configuration tuple as string key."""
+        L, m = config
+        return f"L{L}_m{m}"
