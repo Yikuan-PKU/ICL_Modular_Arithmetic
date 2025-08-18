@@ -2,6 +2,7 @@
 
 import logging
 import typing as t
+from pathlib import Path
 
 import torch
 from datasets import Dataset
@@ -232,24 +233,59 @@ def create_rhm_training_pipeline(
         Tuple of (trainer, metadata)
 
     """
-    print("Creating RHM training pipeline with custom tokenizer...")
+    logger.info("Creating RHM training pipeline with custom tokenizer...")
+
+    # Load training metadata to get config info
+    from ICL.datasets.utils import load_training_metadata
+
+    dataset_path = Path(dataset_path)
+    metadata_file = dataset_path / "metadata.pkl"
+
+    dataset_metadata = None
+    config_L = None
+    config_m = None
+
+    if metadata_file.exists():
+        try:
+            dataset_metadata = load_training_metadata(metadata_file)
+            # Get first configuration as default
+            if dataset_metadata.config_list:
+                config_L, config_m = dataset_metadata.config_list[0]
+                logger.info(f"Loaded dataset config: L={config_L}, m={config_m}")
+            else:
+                logger.info("Warning: No configurations found in dataset metadata")
+        except Exception as e:
+            logger.info(f"Warning: Could not load dataset metadata: {e}")
+    else:
+        logger.info(f"Warning: Dataset metadata not found at {metadata_file}")
 
     # Create tokenizer
     tokenizer = training_config.create_tokenizer()
-    print(f"Created RHM tokenizer with vocab size: {tokenizer.vocab_size}")
+    logger.info(f"Created RHM tokenizer with vocab size: {tokenizer.vocab_size}")
 
     # Prepare datasets
     train_dataset, eval_dataset, metadata = prepare_packed_dataset(
-        dataset_path=dataset_path, tokenizer=tokenizer, config=training_config, **dataset_kwargs
+        dataset_path=str(dataset_path), tokenizer=tokenizer, config=training_config, **dataset_kwargs
     )
+
+    # Calculate n_train from actual dataset
+    n_train = len(train_dataset) if train_dataset else 0
+    logger.info(f"Training dataset size: {n_train}")
 
     # Update model vocab size if needed
     if hasattr(model, "resize_token_embeddings"):
         model.resize_token_embeddings(tokenizer.vocab_size)
-        print(f"Resized model token embeddings to {tokenizer.vocab_size}")
+        logger.info(f"Resized model token embeddings to {tokenizer.vocab_size}")
 
     # Create training arguments
     training_args = training_config.to_training_arguments()
+
+    # Save tokenizer to output directory
+    output_dir = Path(training_args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    tokenizer.save_pretrained(output_dir)
+    logger.info(f"Saved tokenizer to: {output_dir}")
 
     # Create data collator
     data_collator = RHMDataCollator(
@@ -276,12 +312,21 @@ def create_rhm_training_pipeline(
     # Enhanced metadata
     enhanced_metadata = {
         "dataset_metadata": metadata,
+        "training_metadata": {
+            "config_L": config_L,
+            "config_m": config_m,
+            "n_train": n_train,
+            "model_type": "causal_lm" if training_config.task_name == "clm" else "mlm",
+            "dataset_path": str(dataset_path),
+            "output_dir": str(output_dir),
+        },
         "tokenizer_metadata": {
             "vocab_size": tokenizer.vocab_size,
             "pad_token_id": tokenizer.pad_token_id,
             "eos_token_id": tokenizer.eos_token_id,
             "sep_token_id": tokenizer.sep_token_id,
             "mask_token_id": tokenizer.mask_token_id,
+            "tokenizer_class": "RHMTokenizer",
             "special_tokens": {
                 "pad": tokenizer.pad_token,
                 "eos": tokenizer.eos_token,
@@ -294,11 +339,12 @@ def create_rhm_training_pipeline(
             "model_vocab_size": model.config.vocab_size if hasattr(model, "config") else None,
             "hidden_size": model.config.hidden_size if hasattr(model, "config") else None,
         },
+        "dataset_generation_params": dataset_metadata.generation_params if dataset_metadata else {},
     }
 
-    print("Training pipeline created successfully!")
-    print(f"Tokenizer: {tokenizer.__class__.__name__}")
-    print(f"Data collator: {data_collator.__class__.__name__}")
-    print(f"Trainer: {trainer.__class__.__name__}")
+    logger.info("Training pipeline created successfully!")
+    logger.info(f"Tokenizer: {tokenizer.__class__.__name__}")
+    logger.info(f"Data collator: {data_collator.__class__.__name__}")
+    logger.info(f"Trainer: {trainer.__class__.__name__}")
 
     return trainer, enhanced_metadata

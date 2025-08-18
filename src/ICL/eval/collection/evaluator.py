@@ -24,6 +24,73 @@ from ICL.eval.collection.data_schema import (
 )
 
 ##################################################
+# Utility Functions
+##################################################
+
+
+def extract_target_config_from_sequence(sequence: dict[str, t.Any]) -> tuple[int, int]:
+    """Extract target configuration from sequence metadata."""
+    # Try to get from sequence metadata if available
+    if "target_config" in sequence:
+        config = sequence["target_config"]
+        if isinstance(config, (list, tuple)) and len(config) == 2:
+            return tuple(config)
+
+    # Try to infer from sequence structure or context
+    if "config" in sequence:
+        config = sequence["config"]
+        if isinstance(config, (list, tuple)) and len(config) == 2:
+            return tuple(config)
+
+    # Fallback: infer from context complexity
+    context_features = sequence.get("context_features", [])
+    if context_features:
+        # Simple heuristic: assume L based on context depth patterns
+        # This would need to be improved based on actual sequence structure
+        estimated_L = min(len(context_features), 4)  # Cap at reasonable depth
+        estimated_m = 2  # Default multiplicity
+        return (estimated_L, estimated_m)
+
+    # Final fallback
+    return (2, 2)
+
+
+def create_control_sequence(
+    sequence: dict[str, t.Any], control_type: ControlType, all_sequences: list[dict[str, t.Any]] | None = None
+) -> dict[str, t.Any]:
+    """Create control sequence based on type."""
+    if control_type == "normal":
+        return sequence
+
+    import random
+
+    if control_type == "shuffled_context":
+        shuffled_seq = sequence.copy()
+        # Shuffle context pairs
+        context_pairs = list(zip(shuffled_seq["context_features"], shuffled_seq["context_labels"], strict=False))
+        random.shuffle(context_pairs)
+        shuffled_seq["context_features"] = [pair[0] for pair in context_pairs]
+        shuffled_seq["context_labels"] = [pair[1] for pair in context_pairs]
+        return shuffled_seq
+
+    if control_type == "random_context" and all_sequences:
+        # Find other sequences with same context size
+        same_k_sequences = [
+            seq for seq in all_sequences if seq.get("context_size") == sequence.get("context_size") and seq != sequence
+        ]
+
+        if len(same_k_sequences) >= sequence.get("context_size", 0):
+            random_seq = sequence.copy()
+            random_contexts = random.sample(same_k_sequences, sequence.get("context_size", 0))
+            random_seq["context_features"] = [ctx["query_features"] for ctx in random_contexts]
+            random_seq["context_labels"] = [ctx["query_label"] for ctx in random_contexts]
+            return random_seq
+
+    # Fallback to original sequence
+    return sequence
+
+
+##################################################
 # ICLEvaluationEngine
 ##################################################
 
@@ -112,7 +179,7 @@ class ICLEvaluationEngine:
             digits = re.findall(r"\d+", predicted_token)
             if digits:
                 return int(digits[0])
-            # Return random guess if no valid prediction
+            # Return invalid prediction if no valid label found
             return -1
 
     def _extract_attention_patterns(self, attention_tensors: tuple[torch.Tensor, ...]) -> dict[str, t.Any]:
@@ -343,19 +410,27 @@ class ComprehensiveEvaluator:
 
         # Evaluate across all context sizes and control types
         for context_size in self.config.context_sizes:
-            for control_type in self.config.control_types:
-                sequences = self._prepare_sequences_for_evaluation(eval_sequences, context_size, control_type)
+            # Filter sequences by context size
+            context_sequences = [seq for seq in eval_sequences if seq.get("context_size") == context_size]
 
-                for seq_idx, sequence in enumerate(sequences):
+            if not context_sequences:
+                continue
+
+            for control_type in self.config.control_types:
+                for seq_idx, base_sequence in enumerate(context_sequences):
                     try:
+                        # Create control sequence
+                        sequence = create_control_sequence(base_sequence, control_type, context_sequences)
+
                         # Evaluate sequence
                         is_correct, attention_data = self.evaluation_engine.evaluate_icl_sequence(
                             model, tokenizer, sequence, capture_attention=self.config.capture_attention
                         )
 
-                        # Create performance record
-                        target_config = self._get_target_config(sequence, transfer_condition, model_config)
+                        # Extract target configuration from sequence
+                        target_config = extract_target_config_from_sequence(sequence)
 
+                        # Create performance record
                         record = ICLPerformanceRecord(
                             model_id=metadata.model_id,
                             config_L=metadata.config_L,
@@ -370,7 +445,6 @@ class ComprehensiveEvaluator:
                             sequence_id=seq_idx,
                             control_type=control_type,
                             evaluation_timestamp=datetime.now(),
-                            num_sequences=1,
                             num_correct=int(is_correct),
                         )
 
@@ -415,13 +489,17 @@ class ComprehensiveEvaluator:
                         sequences.extend(k_sequences)
                     return sequences
 
-        elif transfer_condition in ["cross_L", "cross_m", "cross_config"]:
-            # Use appropriate transfer condition data
-            condition_key = {
+        else:
+            # Map transfer conditions to dataset keys
+            condition_mapping = {
                 "cross_L": "depth_transfer",
                 "cross_m": "synonym_transfer",
                 "cross_config": "full_transfer",
-            }[transfer_condition]
+            }
+
+            condition_key = condition_mapping.get(transfer_condition)
+            if not condition_key:
+                return []
 
             transfer_data = conditions.get(condition_key, {})
             sequences = []
@@ -429,85 +507,16 @@ class ComprehensiveEvaluator:
             for config_key, config_models in transfer_data.items():
                 for model_data in config_models:
                     for k_sequences in model_data["sequences"].values():
+                        # Add config information to sequences for target extraction
+                        for seq in k_sequences:
+                            if "config" not in seq:
+                                # Parse config from model_data if available
+                                seq["config"] = model_data.get("config", (2, 2))
                         sequences.extend(k_sequences)
 
             return sequences
 
         return []
-
-    def _prepare_sequences_for_evaluation(
-        self, sequences: list[dict[str, t.Any]], context_size: int, control_type: ControlType
-    ) -> list[dict[str, t.Any]]:
-        """Prepare sequences for evaluation with specified context size and control type."""
-        prepared_sequences = []
-
-        for sequence in sequences:
-            # Filter by context size
-            if sequence.get("context_size") == context_size:
-                if control_type == "normal":
-                    prepared_sequences.append(sequence)
-                elif control_type == "shuffled_context":
-                    # Create shuffled version
-                    shuffled_seq = self._create_shuffled_sequence(sequence)
-                    prepared_sequences.append(shuffled_seq)
-                elif control_type == "random_context":
-                    # Create random context version
-                    random_seq = self._create_random_context_sequence(sequence, sequences)
-                    if random_seq:
-                        prepared_sequences.append(random_seq)
-
-        return prepared_sequences
-
-    def _create_shuffled_sequence(self, sequence: dict[str, t.Any]) -> dict[str, t.Any]:
-        """Create a sequence with shuffled context order."""
-        import random
-
-        shuffled_seq = sequence.copy()
-
-        # Shuffle context pairs
-        context_pairs = list(zip(shuffled_seq["context_features"], shuffled_seq["context_labels"], strict=False))
-        random.shuffle(context_pairs)
-
-        shuffled_seq["context_features"] = [pair[0] for pair in context_pairs]
-        shuffled_seq["context_labels"] = [pair[1] for pair in context_pairs]
-
-        return shuffled_seq
-
-    def _create_random_context_sequence(
-        self, sequence: dict[str, t.Any], all_sequences: list[dict[str, t.Any]]
-    ) -> dict[str, t.Any] | None:
-        """Create a sequence with random context from other sequences."""
-        import random
-
-        # Find other sequences with same context size
-        same_k_sequences = [
-            seq for seq in all_sequences if seq.get("context_size") == sequence.get("context_size") and seq != sequence
-        ]
-
-        if len(same_k_sequences) < sequence.get("context_size", 0):
-            return None
-
-        # Sample random contexts
-        random_contexts = random.sample(same_k_sequences, sequence.get("context_size", 0))
-
-        random_seq = sequence.copy()
-        random_seq["context_features"] = [ctx["query_features"] for ctx in random_contexts]
-        random_seq["context_labels"] = [ctx["query_label"] for ctx in random_contexts]
-
-        return random_seq
-
-    def _get_target_config(
-        self, sequence: dict[str, t.Any], transfer_condition: TransferCondition, model_config: tuple[int, int]
-    ) -> tuple[int, int]:
-        """Get target configuration for the sequence."""
-        # For within-config, target is same as model config
-        if transfer_condition == "within_config":
-            return model_config
-
-        # For transfer conditions, try to infer from sequence metadata
-        # This would need to be stored in the evaluation dataset
-        # For now, return model config as fallback
-        return model_config
 
     def _parse_attention_key(self, attention_key: str) -> tuple[int, int]:
         """Parse layer and head indices from attention key."""

@@ -4,7 +4,6 @@ import pickle
 import random
 import typing as t
 import warnings
-from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -12,6 +11,7 @@ import numpy as np
 import torch
 
 from ICL.datasets.RHM import RandomHierarchyModel
+from ICL.datasets.utils import load_training_metadata
 
 T = t.TypeVar("T")
 ConfigTuple = tuple[int, int]  # (L, m)
@@ -35,17 +35,6 @@ class TransferConfig:
             self.context_sizes = [1, 2, 3, 4, 5]
 
 
-@dataclass
-class TrainingMetadata:
-    """Container for training dataset metadata."""
-
-    config_list: list[ConfigTuple]
-    used_seeds: dict[ConfigTuple, list[int]]
-    rules: dict[int, dict]
-    generation_params: dict
-    config_stats: dict
-
-
 class TransferEvaluationGenerator:
     """Generates transfer evaluation datasets with verified independence from training data."""
 
@@ -58,36 +47,9 @@ class TransferEvaluationGenerator:
 
         """
         self.base_seed = base_seed
-        self.train_metadata = self._load_training_metadata(train_metadata_path)
+        self.train_metadata = load_training_metadata(train_metadata_path)
         self.eval_seed_start = 10000  # Large gap from training seeds
         self._setup_seed_isolation()
-
-    def _load_training_metadata(self, metadata_path: Path | str) -> TrainingMetadata:
-        """Load and parse training dataset metadata."""
-        metadata_path = Path(metadata_path)
-
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"Training metadata not found: {metadata_path}")
-
-        with open(metadata_path, "rb") as f:
-            metadata = pickle.load(f)
-
-        # Parse metadata into structured format
-        config_list = [(cfg["L"], cfg["m"]) for cfg in metadata["configurations"]]
-
-        # Extract used seeds per configuration
-        used_seeds = defaultdict(list)
-        for task_id, cfg in enumerate(metadata["configurations"]):
-            config = (cfg["L"], cfg["m"])
-            used_seeds[config].append(task_id)  # task_id was used as seed_rules
-
-        return TrainingMetadata(
-            config_list=config_list,
-            used_seeds=dict(used_seeds),
-            rules=metadata.get("rules", {}),
-            generation_params=metadata.get("generation_params", {}),
-            config_stats=metadata.get("config_stats", {}),
-        )
 
     def _setup_seed_isolation(self):
         """Setup seed ranges to ensure no overlap with training."""

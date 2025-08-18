@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 # Type aliases
@@ -25,8 +24,6 @@ class ModelMetadata:
     checkpoint_step: int
     checkpoint_path: Path
     model_type: str  # "causal_lm" or "mlm"
-    training_seed: int | None = None
-    eval_seed: int | None = None
 
     def to_dict(self) -> dict[str, t.Any]:
         """Convert to dictionary for serialization."""
@@ -38,8 +35,6 @@ class ModelMetadata:
             "checkpoint_step": self.checkpoint_step,
             "checkpoint_path": str(self.checkpoint_path),
             "model_type": self.model_type,
-            "training_seed": self.training_seed,
-            "eval_seed": self.eval_seed,
         }
 
 
@@ -60,7 +55,6 @@ class ICLPerformanceRecord:
     sequence_id: int
     control_type: ControlType
     evaluation_timestamp: datetime
-    num_sequences: int = 0
     num_correct: int = 0
 
     def to_dict(self) -> dict[str, t.Any]:
@@ -79,7 +73,6 @@ class ICLPerformanceRecord:
             "sequence_id": self.sequence_id,
             "control_type": self.control_type,
             "evaluation_timestamp": self.evaluation_timestamp,
-            "num_sequences": self.num_sequences,
             "num_correct": self.num_correct,
         }
 
@@ -93,7 +86,7 @@ class AttentionRecord:
     head_idx: int
     context_size: int
     sequence_id: int
-    attention_matrix: np.ndarray
+    attention_matrix: t.Any  # numpy array
     evaluation_timestamp: datetime
 
     def get_filename(self) -> str:
@@ -129,7 +122,6 @@ class EvaluationConfig:
     batch_size: int = 32
     max_sequences_per_condition: int = 200
     capture_attention: bool = True
-    capture_representations: bool = False
 
     # Output control
     save_intermediate: bool = True
@@ -175,7 +167,6 @@ class DataSchemaManager:
             "sequence_id": "int32",
             "control_type": "category",
             "evaluation_timestamp": "datetime64[ns]",
-            "num_sequences": "int32",
             "num_correct": "int32",
         }
 
@@ -190,8 +181,6 @@ class DataSchemaManager:
             "checkpoint_step": "int32",
             "checkpoint_path": "string",
             "model_type": "category",
-            "training_seed": "Int32",  # Nullable integer
-            "eval_seed": "Int32",  # Nullable integer
         }
 
     @staticmethod
@@ -209,10 +198,7 @@ class DataSchemaManager:
         schema = DataSchemaManager.create_icl_performance_schema()
         for col, dtype in schema.items():
             if col in df.columns:
-                if dtype == "category":
-                    df[col] = df[col].astype(dtype)
-                else:
-                    df[col] = df[col].astype(dtype)
+                df[col] = df[col].astype(dtype)
 
         return df
 
@@ -255,7 +241,6 @@ def create_evaluation_manifest(
             "batch_size": config.batch_size,
             "max_sequences_per_condition": config.max_sequences_per_condition,
             "capture_attention": config.capture_attention,
-            "capture_representations": config.capture_representations,
         },
         "data_schema_version": "1.0",
         "output_files": {

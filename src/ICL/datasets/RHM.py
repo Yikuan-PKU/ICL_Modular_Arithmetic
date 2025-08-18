@@ -401,13 +401,7 @@ class RandomHierarchyModel(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        """Args:
-                idx: sample index
-
-        Returns:
-            Feature-label pairs at index
-
-        """
+        """Feature-label pairs at index"""
         x, y = self.features[idx], self.labels[idx]
 
         if self.transform:

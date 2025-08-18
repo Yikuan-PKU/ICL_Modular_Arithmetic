@@ -1,31 +1,22 @@
-"""Example script to run Phase 1 comprehensive evaluation."""
+"""Phase 1 comprehensive ICL evaluation script."""
 
 import argparse
 from datetime import datetime
 from pathlib import Path
 
-from ICL.eval.collection.ckpt_manager import CheckpointManager
-from ICL.eval.collection.coordinator import (
-    EvaluationCoordinator,
-    create_evaluation_config,
-    run_comprehensive_evaluation,
-)
-
-root_dir = Path("/Users/jliu/workspace/ICL")
-data_dir = root_dir / "datasets"
-model_dir = root_dir / "models"
-result_dir = root_dir / "results"
+from ICL.eval.collection.coordinator import run_comprehensive_evaluation
 
 
-def main():
+def main() -> None:
     """Run comprehensive evaluation pipeline."""
     # Configuration
-    checkpoint_dirs = [model_dir / "rhm_clm_training", model_dir / "rhm_mlm_training"]
+    # root_dir = Path("/Users/jliu/workspace/ICL")
+    root_dir = Path("/scratch2/jliu/ICL")
+    checkpoint_dirs = [root_dir / "models" / "rhm_clm_training", root_dir / "models" / "rhm_mlm_training"]
+    eval_dataset_path = root_dir / "datasets" / "eval" / "verified_transfer_evaluation_dataset.json"
+    output_dir = root_dir / "results" / "raw"
 
-    eval_dataset_path = data_dir / "eval/verified_transfer_evaluation_dataset.json"
-    output_dir = result_dir / "raw"
-
-    # Target configurations to evaluate (L, m pairs)
+    # Target configurations (L, m pairs)
     target_configs = [
         (2, 2),
         (2, 3),
@@ -47,20 +38,17 @@ def main():
         "batch_size": 16,
         "max_sequences_per_condition": 100,
         "capture_attention": True,
-        "capture_representations": False,
         "save_intermediate": True,
-        "overwrite_existing": False,
     }
 
-    print("=" * 80)
+    print("=" * 60)
     print("COMPREHENSIVE ICL EVALUATION PIPELINE")
-    print("=" * 80)
-    print(f"Checkpoint directories: {checkpoint_dirs}")
-    print(f"Evaluation dataset: {eval_dataset_path}")
+    print("=" * 60)
+    print(f"Checkpoint directories: {len(checkpoint_dirs)} directories")
+    print(f"Evaluation dataset: {eval_dataset_path.name}")
     print(f"Output directory: {output_dir}")
-    print(f"Target configurations: {target_configs}")
+    print(f"Target configurations: {len(target_configs)} configs")
     print(f"Context sizes: {evaluation_params['context_sizes']}")
-    print(f"Diversity levels: {evaluation_params['diversity_levels']}")
     print(f"Device: {evaluation_params['device']}")
     print()
 
@@ -76,6 +64,7 @@ def main():
     # Run evaluation
     try:
         start_time = datetime.now()
+        print(f"Starting evaluation at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         results = run_comprehensive_evaluation(
             checkpoint_dirs=checkpoint_dirs,
@@ -88,75 +77,57 @@ def main():
         end_time = datetime.now()
         duration = end_time - start_time
 
-        print("\n" + "=" * 80)
+        print("\n" + "=" * 60)
         print("EVALUATION COMPLETED SUCCESSFULLY")
-        print("=" * 80)
+        print("=" * 60)
         print(f"Duration: {duration}")
-        print(f"Total evaluations: {results['total_evaluations']}")
-        print(f"Total models: {results['total_models']}")
-        print(f"Output directory: {results['output_dir']}")
-        print()
-
-        print("Next steps:")
-        print("1. Run RQ1 emergence analysis: python -m analysis.rq1_emergence_analyzer")
-        print("2. Run RQ2 scaling analysis: python -m analysis.rq2_scaling_analyzer")
-        print("3. Run RQ3 mechanistic analysis: python -m analysis.rq3_mechanistic_analyzer")
-        print("4. Run RQ4 transfer analysis: python -m analysis.rq4_transfer_analyzer")
-        print("5. Run RQ5 diversity analysis: python -m analysis.rq5_diversity_analyzer")
-        print("6. Run RQ6 comparative analysis: python -m analysis.rq6_comparative_analyzer")
+        print(f"Total evaluations: {results.get('total_evaluations', 'N/A')}")
+        print(f"Total models: {results.get('total_models', 'N/A')}")
+        print(f"Results saved to: {output_dir}")
 
     except Exception as e:
         print(f"\nERROR: Evaluation failed: {e}")
         raise
 
 
-def test_configuration():
-    """Test evaluation configuration without running full evaluation."""
-    checkpoint_dirs = [Path("checkpoints/causal_lm")]
-    eval_dataset_path = Path("eval_data/verified_transfer_evaluation_dataset.json")
+def validate_setup() -> None:
+    """Validate configuration without running full evaluation."""
+    root_dir = Path("/Users/jliu/workspace/ICL")
+    checkpoint_dirs = [root_dir / "models" / "rhm_clm_training"]
+    eval_dataset_path = root_dir / "datasets" / "eval" / "verified_transfer_evaluation_dataset.json"
     output_dir = Path("results/test_evaluation")
-    target_configs = [(2, 2), (3, 3)]
-
-    config = create_evaluation_config(
-        checkpoint_dirs=checkpoint_dirs,
-        eval_dataset_path=eval_dataset_path,
-        output_dir=output_dir,
-        target_configs=target_configs,
-        max_sequences_per_condition=10,  # Small number for testing
-        capture_attention=False,  # Disable for faster testing
-    )
-
-    coordinator = EvaluationCoordinator(config)
 
     print("Testing evaluation configuration...")
-    is_valid = coordinator.validate_setup()
 
-    if is_valid:
-        print("✓ Configuration is valid")
+    # Check paths
+    all_valid = True
+    for checkpoint_dir in checkpoint_dirs:
+        if checkpoint_dir.exists():
+            print(f"✓ Found checkpoint directory: {checkpoint_dir}")
+        else:
+            print(f"✗ Missing checkpoint directory: {checkpoint_dir}")
+            all_valid = False
 
-        # Test checkpoint discovery
-        checkpoint_manager = CheckpointManager(config)
-        metadata = checkpoint_manager.discover_checkpoints()
+    if eval_dataset_path.exists():
+        print(f"✓ Found evaluation dataset: {eval_dataset_path}")
+    else:
+        print(f"✗ Missing evaluation dataset: {eval_dataset_path}")
+        all_valid = False
 
-        print(f"✓ Discovered {len(metadata)} checkpoints")
-
-        if metadata:
-            print("Sample checkpoint metadata:")
-            for i, meta in enumerate(metadata[:3]):
-                print(f"  {i + 1}. {meta.model_id} - L{meta.config_L}_m{meta.config_m}_ntrain{meta.n_train}")
+    if all_valid:
+        print("✓ Basic configuration validation passed")
     else:
         print("✗ Configuration validation failed")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run comprehensive ICL evaluation")
-    parser.add_argument("--test", action="store_true", help="Test configuration only")
+    parser.add_argument("--validate", action="store_true", help="Validate setup only")
     parser.add_argument("--device", default="cuda", help="Device to use (cuda/cpu)")
-    parser.add_argument("--max-sequences", type=int, default=100, help="Maximum sequences per condition")
 
     args = parser.parse_args()
 
-    if args.test:
-        test_configuration()
+    if args.validate:
+        validate_setup()
     else:
         main()

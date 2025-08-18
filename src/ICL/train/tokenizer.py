@@ -181,3 +181,65 @@ class RHMTokenizer(PreTrainedTokenizer):
             json.dump(self._vocab, f, indent=2)
 
         return (str(vocab_file),)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        """Load tokenizer from pretrained files."""
+        import json
+        from pathlib import Path
+
+        path = Path(pretrained_model_name_or_path)
+
+        # Load tokenizer config if it exists
+        config_file = path / "tokenizer_config.json"
+        if config_file.exists():
+            with open(config_file) as f:
+                config = json.load(f)
+
+            # Extract vocab_size and special tokens from config
+            vocab_size = config.get("rhm_vocab_size", 37)
+            pad_token = config.get("pad_token", "<pad>")
+            eos_token = config.get("eos_token", "<eos>")
+            sep_token = config.get("sep_token", "<sep>")
+            mask_token = config.get("mask_token", "<mask>")
+            unk_token = config.get("unk_token", "<unk>")
+
+            return cls(
+                vocab_size=vocab_size,
+                pad_token=pad_token,
+                eos_token=eos_token,
+                sep_token=sep_token,
+                mask_token=mask_token,
+                unk_token=unk_token,
+                **kwargs,
+            )
+        # Fallback to default
+        return cls(**kwargs)
+
+    def save_pretrained(self, save_directory, **kwargs):
+        """Save tokenizer to directory."""
+        import json
+        from pathlib import Path
+
+        save_directory = Path(save_directory)
+        save_directory.mkdir(parents=True, exist_ok=True)
+
+        # Save tokenizer config
+        config = {
+            "tokenizer_class": "RHMTokenizer",
+            "rhm_vocab_size": self._rhm_vocab_size,
+            "pad_token": self.pad_token,
+            "eos_token": self.eos_token,
+            "sep_token": self.sep_token,
+            "mask_token": self.mask_token,
+            "unk_token": self.unk_token,
+        }
+
+        with open(save_directory / "tokenizer_config.json", "w") as f:
+            json.dump(config, f, indent=2)
+
+        # Save vocabulary
+        with open(save_directory / "vocab.json", "w") as f:
+            json.dump(self._vocab, f, indent=2)
+
+        return [str(save_directory / "tokenizer_config.json")]

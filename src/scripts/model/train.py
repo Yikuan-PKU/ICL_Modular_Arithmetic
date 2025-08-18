@@ -4,6 +4,7 @@ Simple training pipeline with hardcoded defaults and optional YAML overrides
 """
 
 import argparse
+import json
 import logging
 import typing as t
 from pathlib import Path
@@ -106,6 +107,41 @@ def create_training_config(args: argparse.Namespace) -> RHMTrainingConfig:
     return config
 
 
+def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.Any]) -> None:
+    """Save metadata.json file for evaluation pipeline compatibility.
+
+    Args:
+        output_dir: Training output directory
+        training_metadata: Training metadata from pipeline
+
+    """
+    metadata_file = output_dir / "metadata.json"
+
+    # Extract required fields
+    train_meta = training_metadata.get("training_metadata", {})
+
+    eval_metadata = {
+        "config_L": train_meta.get("config_L", 2),
+        "config_m": train_meta.get("config_m", 2),
+        "n_train": train_meta.get("n_train", 0),
+        "model_type": train_meta.get("model_type", "causal_lm"),
+        "training_seed": 42,  # Default seed
+        "eval_seed": 123,  # Default eval seed
+        "tokenizer_class": "RHMTokenizer",
+        "experiment_name": f"rhm_{train_meta.get('model_type', 'clm')}_L{train_meta.get('config_L', 2)}_m{train_meta.get('config_m', 2)}_ntrain{train_meta.get('n_train', 0)}",
+        "dataset_path": train_meta.get("dataset_path"),
+        "output_dir": str(output_dir),
+        "tokenizer_metadata": training_metadata.get("tokenizer_metadata", {}),
+        "model_metadata": training_metadata.get("model_metadata", {}),
+        "dataset_generation_params": training_metadata.get("dataset_generation_params", {}),
+    }
+
+    with open(metadata_file, "w") as f:
+        json.dump(eval_metadata, f, indent=2)
+
+    logger.info(f"Saved evaluation metadata to: {metadata_file}")
+
+
 def main() -> dict:
     """Train RHM model using simplified configuration system."""
     # Parse arguments and create configuration
@@ -205,10 +241,27 @@ def main() -> dict:
 
     # Log dataset info
     logger.info("Dataset preparation completed:")
+
+    # Train the model
     results = trainer.train()
+
+    # Save model and tokenizer
     trainer.save_model()  # This saves to output_dir
     trainer.save_state()  # This saves trainer state
+
+    # Save evaluation metadata.json
+    output_dir = Path(config.output_dir)
+    save_evaluation_metadata(output_dir, metadata)
+
     logger.info(f"Training completed! Results saved to {config.output_dir}")
+
+    # Log evaluation-ready info
+    train_meta = metadata.get("training_metadata", {})
+    logger.info("Evaluation metadata saved:")
+    logger.info(f"  config_L: {train_meta.get('config_L')}")
+    logger.info(f"  config_m: {train_meta.get('config_m')}")
+    logger.info(f"  n_train: {train_meta.get('n_train')}")
+    logger.info(f"  model_type: {train_meta.get('model_type')}")
 
     return results
 

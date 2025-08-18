@@ -98,9 +98,21 @@ class EvaluationCoordinator:
         conditions = dataset["conditions"]
         expected_conditions = ["within_config", "depth_transfer", "synonym_transfer", "full_transfer"]
 
+        missing_conditions = []
         for condition in expected_conditions:
             if condition not in conditions:
-                self.logger.warning(f"Missing evaluation condition: {condition}")
+                missing_conditions.append(condition)
+
+        if missing_conditions:
+            self.logger.warning(f"Missing evaluation conditions: {missing_conditions}")
+
+        # Validate that each condition has proper structure
+        for condition_name, condition_data in conditions.items():
+            if condition_name == "within_config":
+                if not isinstance(condition_data, list):
+                    raise ValueError(f"Expected list for {condition_name}, got {type(condition_data)}")
+            elif not isinstance(condition_data, dict):
+                raise ValueError(f"Expected dict for {condition_name}, got {type(condition_data)}")
 
         self.logger.info("Evaluation dataset format validation passed")
 
@@ -127,14 +139,16 @@ class EvaluationCoordinator:
                 "attention_data": "raw_evaluations/attention_data/",
                 "logs": "logs/",
             },
-            "next_steps": {
-                "rq1_emergence": "Run analysis/rq1_emergence_analyzer.py",
-                "rq2_scaling": "Run analysis/rq2_scaling_analyzer.py",
-                "rq3_mechanistic": "Run analysis/rq3_mechanistic_analyzer.py",
-                "rq4_transfer": "Run analysis/rq4_transfer_analyzer.py",
-                "rq5_diversity": "Run analysis/rq5_diversity_analyzer.py",
-                "rq6_comparative": "Run analysis/rq6_comparative_analyzer.py",
-            },
+            "analysis_commands": [
+                "# Load and analyze results:",
+                "import pandas as pd",
+                "df = pd.read_parquet('raw_evaluations/icl_performance.parquet')",
+                "model_registry = pd.read_parquet('metadata/model_registry.parquet')",
+                "",
+                "# Quick analysis examples:",
+                "# emergence_analysis = df.groupby(['config_L', 'config_m', 'n_train'])['accuracy'].mean()",
+                "# transfer_analysis = df.groupby('transfer_condition')['accuracy'].mean()",
+            ],
         }
 
         with open(summary_path, "w") as f:
