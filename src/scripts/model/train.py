@@ -101,9 +101,7 @@ def main() -> dict:
     logger.info(f"  Epochs: {config.num_train_epochs}")
     logger.info(f"  Train batch size: {config.per_device_train_batch_size}")
     logger.info(f"  Eval batch size: {config.per_device_eval_batch_size}")
-    logger.info(f"  Vocab size: {config.vocab_size} (effective: {config.effective_vocab_size})")
-    logger.info(f"  Max sequence length: {config.max_sequence_length}")
-    logger.info(f"  Pack sequences: {config.pack_sequences}")
+    logger.info(f"  Vocab size: {config.vocab_size}")
     logger.info(f"  Output dir: {config.output_dir}")
     logger.info(f"  Run name: {config.run_name}")
 
