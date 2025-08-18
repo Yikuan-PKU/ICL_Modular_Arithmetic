@@ -12,7 +12,8 @@ import yaml
 from transformers import set_seed
 
 from ICL import settings
-from ICL.train.model import RHMTrainingConfig, create_rhm_training_pipeline
+from ICL.train.model import RHMTrainingConfig
+from ICL.train.train_pipeline import create_rhm_training_pipeline
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -71,11 +72,31 @@ def create_training_config(args: argparse.Namespace) -> RHMTrainingConfig:
         # Convert dataclass to dict for merging
         config_dict = config.__dict__.copy()
 
-        # Apply YAML overrides
+        # Apply YAML overrides with type conversion
         for key, value in yaml_overrides.items():
             if hasattr(config, key):
-                config_dict[key] = value
-                logger.info(f"YAML override: {key} = {value}")
+                # Get the original type from the default config
+                original_value = getattr(config, key)
+
+                # Convert value to the correct type
+                try:
+                    if isinstance(original_value, bool):
+                        converted_value = str(value).lower() in ["true", "1", "yes", "on"]
+                    elif isinstance(original_value, int):
+                        converted_value = int(value)
+                    elif isinstance(original_value, float):
+                        converted_value = float(value)
+                    elif isinstance(original_value, list):
+                        converted_value = value if isinstance(value, list) else [value]
+                    else:
+                        converted_value = value
+
+                    config_dict[key] = converted_value
+                    logger.info(f"YAML override: {key} = {converted_value} (type: {type(converted_value).__name__})")
+
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to convert {key}={value}: {e}. Using as string.")
+                    config_dict[key] = value
             else:
                 logger.warning(f"Unknown parameter in YAML: {key} (ignored)")
 
@@ -90,7 +111,6 @@ def main() -> dict:
     # Parse arguments and create configuration
     args = parse_args()
     config = create_training_config(args)
-
     # Set seed for reproducibility
     set_seed(config.seed)
 
@@ -101,7 +121,9 @@ def main() -> dict:
     logger.info(f"  Epochs: {config.num_train_epochs}")
     logger.info(f"  Train batch size: {config.per_device_train_batch_size}")
     logger.info(f"  Eval batch size: {config.per_device_eval_batch_size}")
-    logger.info(f"  Vocab size: {config.vocab_size}")
+    logger.info(f"  Vocab size: {config.vocab_size} (effective: {config.effective_vocab_size})")
+    logger.info(f"  Max sequence length: {config.max_sequence_length}")
+    logger.info(f"  Pack sequences: {config.pack_sequences}")
     logger.info(f"  Output dir: {config.output_dir}")
     logger.info(f"  Run name: {config.run_name}")
 
@@ -113,11 +135,68 @@ def main() -> dict:
         dataset_path = settings.PATH.train_dir / "raw"
         logger.info(f"Using default dataset path: {dataset_path}")
 
-    # Create trainer using factory function
-    logger.info("Creating trainer and preparing datasets...")
+    # Create model based on configuration
+    logger.info("Creating model...")
+    if config.model_name_or_path:
+        # Load from existing model
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForMaskedLM
+
+        model_config = AutoConfig.from_pretrained(config.model_name_or_path)
+        model_config.vocab_size = config.effective_vocab_size
+
+        if config.task_name == "clm":
+            model = AutoModelForCausalLM.from_pretrained(config.model_name_or_path, config=model_config)
+        else:
+            model = AutoModelForMaskedLM.from_pretrained(config.model_name_or_path, config=model_config)
+    # Create new model
+    elif config.task_name == "clm":
+        from transformers import AutoModelForCausalLM, GPT2Config
+
+        model_config = GPT2Config(
+            vocab_size=config.effective_vocab_size,
+            n_positions=config.max_position_embeddings,
+            n_embd=config.hidden_size,
+            n_layer=config.num_hidden_layers,
+            n_head=config.num_attention_heads,
+            n_inner=config.intermediate_size,
+            resid_pdrop=0.1,
+            embd_pdrop=0.1,
+            attn_pdrop=0.1,
+            use_cache=False,
+            pad_token_id=config.pad_token_id,
+        )
+        model = AutoModelForCausalLM.from_config(model_config)
+
+    elif config.task_name == "mlm":
+        from transformers import AutoModelForMaskedLM, BertConfig
+
+        model_config = BertConfig(
+            vocab_size=config.effective_vocab_size,
+            hidden_size=config.hidden_size,
+            num_hidden_layers=config.num_hidden_layers,
+            num_attention_heads=config.num_attention_heads,
+            intermediate_size=config.intermediate_size,
+            max_position_embeddings=config.max_position_embeddings,
+            hidden_dropout_prob=0.1,
+            attention_probs_dropout_prob=0.1,
+            pad_token_id=config.pad_token_id,
+            mask_token_id=config.mask_token_id,
+            cls_token_id=config.cls_token_id,
+            sep_token_id=config.sep_token_id,
+        )
+        model = AutoModelForMaskedLM.from_config(model_config)
+    else:
+        raise ValueError(f"Unknown task: {config.task_name}")
+
+    logger.info(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+
+    # Create trainer using your existing pipeline function
+    logger.info("Creating training pipeline...")
+
     trainer, metadata = create_rhm_training_pipeline(
         dataset_path=str(dataset_path),
-        training_config=config,
+        model=model,
+        training_config=config,  # Use 'training_config' instead of 'config'
         train_split_ratio=getattr(config, "train_split_ratio", 0.8),
         filter_config_L=getattr(config, "filter_config_L", None),
         filter_config_m=getattr(config, "filter_config_m", None),
@@ -125,15 +204,10 @@ def main() -> dict:
     )
 
     # Log dataset info
-    dataset_metadata = metadata["dataset_metadata"]
     logger.info("Dataset preparation completed:")
-    logger.info(f"  Train size: {dataset_metadata.get('train_size', 'Unknown'):,}")
-    logger.info(f"  Eval size: {dataset_metadata.get('eval_size', 'Unknown'):,}")
-    logger.info(f"  Packing enabled: {dataset_metadata.get('packing_enabled', 'Unknown')}")
-
-    # Train model
-    logger.info(f"Starting training for {config.task_name.upper()} task...")
     results = trainer.train()
+    trainer.save_model()  # This saves to output_dir
+    trainer.save_state()  # This saves trainer state
     logger.info(f"Training completed! Results saved to {config.output_dir}")
 
     return results

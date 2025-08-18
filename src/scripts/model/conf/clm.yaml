@@ -1,9 +1,0 @@
-task_name: "clm"
-learning_rate: 2e-4
-num_train_epochs: 50
-per_device_train_batch_size: 32
-per_device_eval_batch_size: 64
-output_dir: "models/production_rhm"
-save_steps: 1000
-eval_steps: 1000
-run_name: "production_v1"
