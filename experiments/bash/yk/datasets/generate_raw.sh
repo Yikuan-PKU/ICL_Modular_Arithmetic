@@ -2,14 +2,14 @@
 #SBATCH -J RHM_uniform
 #SBATCH -p gpu_l40
 #SBATCH -N 1
-#SBATCH -o ICL_%j.out
-#SBATCH -e ICL_%j.err
+#SBATCH -o RHM_%j.out
+#SBATCH -e RHM_%j.err
 #SBATCH --no-requeue
 #SBATCH -A qi_g1
 #SBATCH --qos=qil40
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --overcommit
-#SBATCH --mincpus=9
+#SBATCH --mincpus=1
 #SBATCH --output=~/lustre1/qi_pkuhpc/ykzhang/ICL_RHM/experiments/bash/yk/datasets/uniform.log
 
 
