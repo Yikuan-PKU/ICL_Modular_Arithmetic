@@ -1,0 +1,59 @@
+# config/models/uniform_allmix_576_42_clm/training_config.yaml
+# CLM-specific training configuration
+
+# Model architecture
+vocab_size: 37
+hidden_size: 512
+num_hidden_layers: 6
+num_attention_heads: 8
+intermediate_size: 2048
+max_position_embeddings: 2048
+
+# Training parameters
+task_name: "clm"
+num_train_epochs: 50
+per_device_train_batch_size: 32
+per_device_eval_batch_size: 64
+gradient_accumulation_steps: 1
+learning_rate: 1e-4
+weight_decay: 0.01
+warmup_ratio: 0.1
+lr_scheduler_type: "linear"
+
+# Sequence processing
+max_sequence_length: 512
+pack_sequences: true
+mlm: false  # CLM doesn't use masking
+
+# NEW: Cross-configuration shuffling
+shuffle_before_packing: true
+shuffle_strategy: "global"
+shuffle_seed: 42
+
+# Evaluation
+evaluation_strategy: "steps"
+eval_steps: 500
+save_steps: 500
+logging_steps: 100
+
+# Optimization
+adam_beta1: 0.9
+adam_beta2: 0.999
+max_grad_norm: 1.0
+
+# Checkpointing
+save_total_limit: 3
+load_best_model_at_end: true
+metric_for_best_model: "eval_loss"
+
+# Dataset filtering (optional)
+# filter_config_L: 2
+# filter_config_m: 2
+# max_samples: 10000
+
+# Reproducibility
+seed: 42
+
+# Logging
+report_to: ["wandb"]
+run_name: "uniform_allmix_576_42_clm"

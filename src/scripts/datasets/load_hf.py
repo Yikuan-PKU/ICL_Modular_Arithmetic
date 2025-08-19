@@ -194,8 +194,8 @@ def generate_raw_rhm_dataset(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Save HuggingFace dataset
-    dataset.save_to_disk(str(output_path / "raw_dataset"))
-    print(f"✓ Saved HuggingFace dataset to {output_path / 'raw_dataset'}")
+    dataset.save_to_disk(str(output_path / "dataset"))
+    print(f"✓ Saved HuggingFace dataset to {output_path / 'dataset'}")
 
     # Save metadata
     with (output_path / "metadata.pkl").open("wb") as f:

@@ -31,7 +31,7 @@ class UnifiedRHMDataset:
         print("Loading RHM dataset...")
 
         # Load HuggingFace dataset
-        dataset_file = self.dataset_path / "raw_dataset"
+        dataset_file = self.dataset_path / "dataset"
         if not dataset_file.exists():
             raise FileNotFoundError(f"Dataset not found at {dataset_file}")
 

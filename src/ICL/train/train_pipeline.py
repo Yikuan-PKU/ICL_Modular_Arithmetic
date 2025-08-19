@@ -2,7 +2,6 @@
 
 import logging
 import typing as t
-from pathlib import Path
 
 import torch
 from datasets import Dataset
@@ -13,6 +12,7 @@ from transformers import (
     TrainingArguments,
 )
 
+from ICL.settings import ModelConfig
 from ICL.train.model import RHMTrainingConfig, prepare_packed_dataset
 from ICL.train.tokenizer import RHMTokenizer
 
@@ -216,15 +216,15 @@ class HierarchicalMetricsCallback(TrainerCallback):
 
 
 def create_rhm_training_pipeline(
-    dataset_path: str,
+    model_config: ModelConfig,  # Use ModelConfig instead of dataset path
     model,
     training_config: RHMTrainingConfig,
     **dataset_kwargs,
 ) -> tuple[RHMTrainer, dict[str, t.Any]]:
-    """Create complete RHM training pipeline with custom tokenizer.
+    """Create complete RHM training pipeline with hierarchical config support.
 
     Args:
-        dataset_path: Path to unified RHM dataset
+        model_config: ModelConfig for hierarchical path management
         model: Model to train
         training_config: Training configuration
         **dataset_kwargs: Additional arguments for dataset preparation
@@ -233,12 +233,22 @@ def create_rhm_training_pipeline(
         Tuple of (trainer, metadata)
 
     """
-    logger.info("Creating RHM training pipeline with custom tokenizer...")
+    logger.info("Creating RHM training pipeline with hierarchical config...")
+
+    # Get paths from model config
+    paths = model_config.get_model_paths()
+    dataset_path = paths["dataset_dir"]
+    output_dir = paths["model_dir"]
+
+    # Update training config output directory
+    training_config.output_dir = str(output_dir)
+
+    logger.info(f"Dataset path: {dataset_path}")
+    logger.info(f"Model output path: {output_dir}")
 
     # Load training metadata to get config info
     from ICL.datasets.utils import load_training_metadata
 
-    dataset_path = Path(dataset_path)
     metadata_file = dataset_path / "metadata.pkl"
 
     dataset_metadata = None
@@ -280,10 +290,10 @@ def create_rhm_training_pipeline(
     # Create training arguments
     training_args = training_config.to_training_arguments()
 
-    # Save tokenizer to output directory
-    output_dir = Path(training_args.output_dir)
+    # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Save tokenizer to hierarchical output directory
     tokenizer.save_pretrained(output_dir)
     logger.info(f"Saved tokenizer to: {output_dir}")
 
@@ -309,8 +319,15 @@ def create_rhm_training_pipeline(
         callbacks=callbacks,
     )
 
-    # Enhanced metadata
+    # Enhanced metadata with hierarchical info
     enhanced_metadata = {
+        "model_config": {
+            "dataset_name": model_config.dataset_config.to_name(),
+            "model_name": model_config.to_name(),
+            "model_type": model_config.model_type,
+            "dataset_path": str(dataset_path),
+            "model_output_path": str(output_dir),
+        },
         "dataset_metadata": metadata,
         "training_metadata": {
             "config_L": config_L,
@@ -319,6 +336,8 @@ def create_rhm_training_pipeline(
             "model_type": "causal_lm" if training_config.task_name == "clm" else "mlm",
             "dataset_path": str(dataset_path),
             "output_dir": str(output_dir),
+            "shuffling_enabled": training_config.shuffle_before_packing,
+            "shuffle_strategy": training_config.shuffle_strategy if training_config.shuffle_before_packing else None,
         },
         "tokenizer_metadata": {
             "vocab_size": tokenizer.vocab_size,

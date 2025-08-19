@@ -1,5 +1,6 @@
 """RHM Training Configuration with Custom Tokenizer Support"""
 
+import dataclasses
 import logging
 import os
 import random
@@ -59,6 +60,11 @@ class RHMTrainingConfig:
     pack_sequences: bool = True
     mlm: bool = True
     mlm_probability: float = 0.15
+
+    # NEW: Cross-configuration shuffling
+    shuffle_before_packing: bool = False
+    shuffle_seed: int = 42
+    shuffle_strategy: str = "global"  # "global", "balanced", "weighted"
 
     # Checkpoint configuration
     save_strategy: str = "steps"
@@ -133,10 +139,9 @@ class RHMTrainingConfig:
         """Convert to HuggingFace TrainingArguments with version compatibility."""
         training_args_dict = {
             "output_dir": self.output_dir,
-            "output_dir": self.output_dir,
-            "save_strategy": "steps",  # or "epoch"
-            "save_steps": 500,  # adjust as needed
-            "save_total_limit": 3,  # keep only last 3 checkpoints
+            "save_strategy": "steps",
+            "save_steps": 500,
+            "save_total_limit": 3,
             "load_best_model_at_end": True,
             "num_train_epochs": self.num_train_epochs,
             "per_device_train_batch_size": self.per_device_train_batch_size,
@@ -173,14 +178,12 @@ class RHMTrainingConfig:
         if "wandb" in self.report_to:
             os.environ["WANDB_DIR"] = self.output_dir
 
-        # Try creating TrainingArguments, remove problematic parameters if they fail
         try:
             return TrainingArguments(**training_args_dict)
         except TypeError as e:
             logger.warning(f"TrainingArguments creation failed: {e}")
             logger.info("Trying with minimal parameters for version compatibility...")
 
-            # Minimal set of parameters that should work across versions
             minimal_args = {
                 "output_dir": self.output_dir,
                 "num_train_epochs": self.num_train_epochs,
@@ -197,6 +200,72 @@ class RHMTrainingConfig:
             return TrainingArguments(**minimal_args)
 
 
+def _shuffle_cross_configuration(dataset: Dataset, config: RHMTrainingConfig) -> Dataset:
+    """Shuffle sequences across different configurations before packing."""
+    if not config.shuffle_before_packing:
+        return dataset
+
+    logger.info(f"Shuffling dataset with strategy: {config.shuffle_strategy}")
+
+    if config.shuffle_strategy == "global":
+        # Simple global shuffle
+        indices = list(range(len(dataset)))
+        random.Random(config.shuffle_seed).shuffle(indices)
+        shuffled_dataset = dataset.select(indices)
+        logger.info(f"Applied global shuffle to {len(dataset)} sequences")
+        return shuffled_dataset
+
+    if config.shuffle_strategy == "balanced":
+        # Ensure balanced representation from each config
+        import pandas as pd
+
+        # Convert to pandas for easier grouping
+        df = dataset.to_pandas()
+
+        # Group by configuration
+        groups = df.groupby(["config_L", "config_m"])
+
+        # Shuffle within each group, then interleave
+        shuffled_dfs = []
+        for (L, m), group in groups:
+            group_shuffled = group.sample(frac=1, random_state=config.shuffle_seed).reset_index(drop=True)
+            shuffled_dfs.append(group_shuffled)
+
+        # Interleave groups
+        max_group_size = max(len(df) for df in shuffled_dfs)
+        interleaved_rows = []
+
+        for i in range(max_group_size):
+            for df in shuffled_dfs:
+                if i < len(df):
+                    interleaved_rows.append(df.iloc[i])
+
+        interleaved_df = pd.DataFrame(interleaved_rows).reset_index(drop=True)
+        shuffled_dataset = Dataset.from_pandas(interleaved_df)
+        logger.info(f"Applied balanced shuffle across {len(groups)} configurations")
+        return shuffled_dataset
+
+    if config.shuffle_strategy == "weighted":
+        # Weight shuffling by configuration complexity (L * m)
+        import pandas as pd
+
+        df = dataset.to_pandas()
+        df["complexity"] = df["config_L"] * df["config_m"]
+
+        # Create weights inversely proportional to complexity (more complex = lower weight)
+        max_complexity = df["complexity"].max()
+        df["weight"] = max_complexity / df["complexity"]
+
+        # Sample with weights
+        shuffled_df = df.sample(frac=1, weights="weight", random_state=config.shuffle_seed).reset_index(drop=True)
+        shuffled_dataset = Dataset.from_pandas(shuffled_df.drop(columns=["complexity", "weight"]))
+        logger.info("Applied weighted shuffle based on configuration complexity")
+        return shuffled_dataset
+
+    logger.warning(f"Unknown shuffle strategy: {config.shuffle_strategy}, using global")
+    return _shuffle_cross_configuration(dataset, dataclasses.replace(config, shuffle_strategy="global"))
+
+
 def prepare_packed_dataset(
     dataset_path: str,
     tokenizer: RHMTokenizer,
@@ -206,21 +275,7 @@ def prepare_packed_dataset(
     filter_config_m: int | None = None,
     max_samples: int | None = None,
 ) -> tuple[Dataset, Dataset, dict[str, t.Any]]:
-    """Prepare packed dataset for HuggingFace training with custom tokenizer.
-
-    Args:
-        dataset_path: Path to unified RHM dataset
-        tokenizer: RHM tokenizer instance
-        config: Training configuration
-        train_split_ratio: Ratio for train/eval split
-        filter_config_L: Filter by hierarchy depth
-        filter_config_m: Filter by multiplicity
-        max_samples: Maximum samples to use
-
-    Returns:
-        Tuple of (train_dataset, eval_dataset, metadata)
-
-    """
+    """Prepare packed dataset for HuggingFace training with custom tokenizer."""
     print("=" * 60)
     print("PREPARING PACKED DATASET WITH CUSTOM TOKENIZER")
     print("=" * 60)
@@ -246,6 +301,11 @@ def prepare_packed_dataset(
         dataset = dataset.select(indices[:max_samples])
         print(f"After sampling: {len(dataset):,}")
 
+    # NEW: Shuffle sequences across configurations before packing
+    if config.shuffle_before_packing:
+        dataset = _shuffle_cross_configuration(dataset, config)
+        print(f"After cross-configuration shuffling: {len(dataset):,}")
+
     # Prepare sequences for packing
     if config.pack_sequences:
         packed_dataset = _pack_sequences(dataset, tokenizer, config)
@@ -264,6 +324,8 @@ def prepare_packed_dataset(
         "train_size": len(train_dataset),
         "eval_size": len(eval_dataset),
         "packing_enabled": config.pack_sequences,
+        "shuffling_enabled": config.shuffle_before_packing,
+        "shuffle_strategy": config.shuffle_strategy if config.shuffle_before_packing else None,
         "config": config,
         "vocab_info": unified_dataset.get_vocab_info(),
         "tokenizer_vocab_size": tokenizer.vocab_size,

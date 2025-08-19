@@ -11,7 +11,7 @@ SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/datasets"
 
 
 # Define experiment parameters (only need to set once)
-DATASET_TYPE="zipf" # or uniform
+DATASET_TYPE="uniform" # or uniform
 MIXTURE_TYPE="allmix"
 TOTAL_RULES=576
 SEED=42
