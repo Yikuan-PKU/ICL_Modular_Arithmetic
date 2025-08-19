@@ -1,6 +1,6 @@
 # rhm_config.yaml - Example configuration for RHM training
-dataset_path: "/scratch2/jliu/ICL/datasets/train/raw"
-output_dir: "/store/scratch/jliu/ICL/models/rhm_clm_training"
+dataset_path: "./src/data/datasets/train/raw"
+output_dir: "./src/models/rhm_clm_training"
 # Dataset configuration
 train_split_ratio: 0.8
 filter_config_L: 3          # Filter by hierarchy depth (optional)

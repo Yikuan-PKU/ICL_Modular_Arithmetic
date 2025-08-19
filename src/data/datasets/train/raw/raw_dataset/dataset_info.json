@@ -1,0 +1,31 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "input_ids": {
+      "feature": {
+        "dtype": "int32",
+        "_type": "Value"
+      },
+      "_type": "List"
+    },
+    "task_id": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "config_L": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "config_m": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "length": {
+      "dtype": "int64",
+      "_type": "Value"
+    }
+  },
+  "homepage": "",
+  "license": ""
+}

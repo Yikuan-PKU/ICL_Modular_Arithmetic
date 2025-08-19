@@ -11,7 +11,6 @@ class _MyPathSettings:
 
     COML_SERVERS: tuple = tuple({"oberon", "oberon2", "habilis", *[f"puck{i}" for i in range(1, 7)]})
     KNOWN_HOSTS: tuple[str, ...] = (*COML_SERVERS, "mbp-de-jliu.home")
-
     def __post_init__(self) -> None:
         if "DATA_DIR" not in _os.environ:
             hostname = _socket.gethostname()
@@ -20,6 +19,8 @@ class _MyPathSettings:
             elif hostname == "mbp-de-jliu.home":
                 # Default for your MacBook (adjust if you want another location)
                 self.DATA_DIR = _Path.home() / "local_data"
+            elif hostname == "PC-20211018VJML":
+                self.DATA_DIR = _Path("./src/data")
             else:
                 # fallback for unknown hosts
                 self.DATA_DIR = _Path("data/")

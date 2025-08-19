@@ -170,7 +170,7 @@ def main() -> dict:
     else:
         dataset_path = settings.PATH.train_dir / "raw"
         logger.info(f"Using default dataset path: {dataset_path}")
-
+    print(dataset_path)
     # Create model based on configuration
     logger.info("Creating model...")
     if config.model_name_or_path:
