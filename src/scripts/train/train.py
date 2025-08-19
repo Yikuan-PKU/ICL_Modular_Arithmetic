@@ -20,7 +20,7 @@ from ICL.train.model import RHMTrainingConfig
 from ICL.train.train_pipeline import create_rhm_training_pipeline
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # TODO: add multi-gpu config
