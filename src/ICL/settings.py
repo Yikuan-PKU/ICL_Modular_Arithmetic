@@ -17,7 +17,7 @@ class _MyPathSettings:
 
     COML_SERVERS: tuple = tuple({"oberon", "oberon2", "habilis", *[f"puck{i}" for i in range(1, 7)]})
     KNOWN_HOSTS: tuple[str, ...] = (*COML_SERVERS, "mbp-de-jliu.home")
-    PKUHPC_SERVERS: tuple[str, ...] = ("login12", "login10", "login7", "login5")
+
     def __post_init__(self) -> None:
         if "DATA_DIR" not in _os.environ:
             hostname = _socket.gethostname()
@@ -28,8 +28,6 @@ class _MyPathSettings:
                 self.DATA_DIR = _Path.home() / "local_data"
             elif hostname == "PC-20211018VJML":
                 self.DATA_DIR = _Path("./src/data")
-            elif hostname in self.PKUHPC_SERVERS:
-                self.DATA_DIR = _Path("/home/lustre1/ykzhang/ICL_RHM")
             else:
                 # fallback for unknown hosts
                 self.DATA_DIR = _Path("data/")
@@ -81,8 +79,61 @@ PATH = _MyPathSettings()
 
 
 @dataclass(frozen=True)
+class DatasetConfig:
+    """Model-agnostic dataset identification."""
+
+    dataset_type: str
+    mixture_type: str
+    total_rules: int
+    seed: int
+
+    def to_name(self) -> str:
+        """Generate model-agnostic dataset name."""
+        return f"{self.dataset_type}_{self.mixture_type}_{self.total_rules}_{self.seed}"
+
+    def get_dataset_paths(self) -> dict[str, Path]:
+        """Generate dataset-specific paths."""
+        name = self.to_name()
+        return {
+            "dataset_dir": PATH.dataset_root / name,
+            "config_dir": PATH.conf_dir / "datasets" / name,
+        }
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """Model-specific training identification."""
+
+    dataset_config: DatasetConfig
+    model_type: str
+
+    def to_name(self) -> str:
+        """Generate full model name."""
+        return f"{self.dataset_config.to_name()}_{self.model_type}"
+
+    def get_model_paths(self) -> dict[str, Path]:
+        """Generate model-specific paths."""
+        dataset_name = self.dataset_config.to_name()
+        return {
+            "dataset_dir": PATH.dataset_root / dataset_name,
+            "model_dir": PATH.model_dir / dataset_name / self.model_type,
+            "config_dir": PATH.conf_dir / "models" / self.to_name(),
+        }
+
+    def get_eval_paths(self, eval_suffix: str = "") -> dict[str, Path]:
+        """Generate evaluation paths."""
+        base_name = self.to_name()
+        result_name = f"{base_name}__{eval_suffix}" if eval_suffix else base_name
+
+        paths = self.get_model_paths()
+        paths["results_dir"] = PATH.result_dir / result_name
+        return paths
+
+
+# Backward compatibility
+@dataclass(frozen=True)
 class ExperimentConfig:
-    """Immutable experiment identifier that generates all paths consistently."""
+    """Legacy experiment config for backward compatibility."""
 
     dataset_type: str
     model_type: str
@@ -109,11 +160,11 @@ class ExperimentConfig:
 # Shared arg parser
 
 
-def create_base_parser() -> argparse.ArgumentParser:
-    """Create minimal shared parser for experiment identification only."""
+def create_base_parser(require_model_type: bool = True) -> argparse.ArgumentParser:
+    """Create minimal shared parser for experiment identification."""
     parser = argparse.ArgumentParser(add_help=False)
 
-    # Experiment identification (required for all scripts)
+    # Experiment identification
     exp_group = parser.add_argument_group("Experiment Identification")
     exp_group.add_argument(
         "--dataset-type", choices=["uniform", "zipf"], required=True, help="Probability distribution for rule sampling"
@@ -121,7 +172,7 @@ def create_base_parser() -> argparse.ArgumentParser:
     exp_group.add_argument(
         "--model-type",
         choices=["clm", "mlm"],
-        required=True,
+        required=require_model_type,
         help="Model type: causal (clm) or masked (mlm) language model",
     )
     exp_group.add_argument(
@@ -148,8 +199,27 @@ def create_base_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_dataset_config(args: argparse.Namespace) -> DatasetConfig:
+    """Convert parsed arguments to DatasetConfig."""
+    return DatasetConfig(
+        dataset_type=args.dataset_type,
+        mixture_type=args.mixture_type,
+        total_rules=args.total_rules,
+        seed=args.seed,
+    )
+
+
+def parse_model_config(args: argparse.Namespace) -> ModelConfig:
+    """Convert parsed arguments to ModelConfig."""
+    dataset_config = parse_dataset_config(args)
+    return ModelConfig(
+        dataset_config=dataset_config,
+        model_type=args.model_type,
+    )
+
+
 def parse_experiment_config(args: argparse.Namespace) -> ExperimentConfig:
-    """Convert parsed command line arguments to ExperimentConfig."""
+    """Convert parsed command line arguments to ExperimentConfig (legacy)."""
     return ExperimentConfig(
         dataset_type=args.dataset_type,
         model_type=args.model_type,
@@ -165,5 +235,4 @@ def validate_args(args: argparse.Namespace) -> bool:
     if args.overwrite and args.resume:
         raise ValueError("Cannot specify both --overwrite and --resume")
 
-    # Add any other validation logic here
     return True
