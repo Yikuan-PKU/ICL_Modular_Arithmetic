@@ -14,14 +14,13 @@ from pathlib import Path as _Path
 @_dataclasses.dataclass
 class _MyPathSettings:
     DATA_DIR: _Path = _Path(_os.environ.get("DATA_DIR", "data/"))
+
     COML_SERVERS: tuple = tuple({"oberon", "oberon2", "habilis", *[f"puck{i}" for i in range(1, 7)]})
     KNOWN_HOSTS: tuple[str, ...] = (*COML_SERVERS, "mbp-de-jliu.home")
-    # print hostname
-
+    PKUHPC_SERVERS: tuple[str, ...] = ("login12", "login10", "login7", "login5")
     def __post_init__(self) -> None:
         if "DATA_DIR" not in _os.environ:
             hostname = _socket.gethostname()
-            print(hostname)
             if hostname in self.COML_SERVERS:
                 self.DATA_DIR = _Path("/scratch2/jliu/ICL")
             elif hostname == "mbp-de-jliu.home":
@@ -29,8 +28,11 @@ class _MyPathSettings:
                 self.DATA_DIR = _Path.home() / "local_data"
             elif hostname == "PC-20211018VJML":
                 self.DATA_DIR = _Path("./src/data")
+            elif hostname in self.PKUHPC_SERVERS:
+                self.DATA_DIR = _Path("/home/lustre1/ykzhang/ICL_RHM")
             else:
-                self.DATA_DIR = _Path("/lustre1/qi_pkuhpc/ykzhang/ICL_RHM")
+                # fallback for unknown hosts
+                self.DATA_DIR = _Path("data/")
 
         if not self.DATA_DIR.is_dir():
             _warnings.warn(
