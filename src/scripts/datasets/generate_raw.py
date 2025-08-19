@@ -1,38 +1,93 @@
-import argparse
+import logging
 import pickle
+import warnings
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import torch
+import yaml
 from datasets import Dataset
 
-from ICL import settings
 from ICL.datasets.RHM import RandomHierarchyModel
+from ICL.settings import ExperimentConfig, create_base_parser, parse_experiment_config
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Extract word surprisal across different training steps.")
-    parser.add_argument("--resume", action="store_true", help="Resume from the existing checkpoint")
-    return parser.parse_args()
+def create_dataset_parser():
+    """Create argument parser for dataset generation."""
+    parser = create_base_parser()
+    parser.description = "Generate RHM dataset for hierarchical learning experiments"
+
+    # Dataset-specific arguments
+    dataset_group = parser.add_argument_group("Dataset Generation")
+    dataset_group.add_argument(
+        "--validate-only", action="store_true", help="Only validate configuration without generating data"
+    )
+
+    return parser
 
 
-def generate_raw_rhm_dataset(
-    config_list: list[tuple[int, int]],
-    samples_per_config: int = 1000,
-    output_dir: str = "./raw_rhm_data",
-    vocab_size: int = 32,
-    num_classes: int = 10,
-    tuple_size: int = 2,
-    seed_sample: int = 42,
-    save_intermediate: bool = True,
+def load_yaml_config(config_path: Path) -> dict[str, Any]:
+    """Load YAML configuration file."""
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+    with config_path.open("r") as f:
+        return yaml.safe_load(f)
+
+
+def generate_zipf_distribution(n: int, alpha: float = 1.0) -> list[float]:
+    """Generate normalized Zipf distribution with n elements."""
+    if n <= 0:
+        raise ValueError("Number of elements must be positive")
+
+    # Generate Zipf probabilities: 1/k^alpha for k=1,2,...,n
+    ranks = np.arange(1, n + 1)
+    raw_probs = 1.0 / (ranks**alpha)
+
+    # Normalize to sum to 1
+    normalized_probs = raw_probs / raw_probs.sum()
+
+    return normalized_probs.tolist()
+
+
+def create_rule_probabilities(
+    rules: dict[int, torch.Tensor], distribution_type: str, **params
+) -> dict[int, torch.Tensor] | None:
+    """Create rule sampling probabilities for RHM based on distribution type."""
+    if distribution_type == "uniform":
+        return None  # RHM uses uniform probabilities by default
+
+    if distribution_type == "zipf":
+        alpha = params.get("zipf_alpha", 1.0)
+        probability = {}
+
+        for level, rule_tensor in rules.items():
+            m = rule_tensor.shape[1]  # Number of synonymic rules at this level
+            zipf_probs = generate_zipf_distribution(m, alpha)
+            probability[level] = torch.tensor(zipf_probs, dtype=torch.float32)
+
+        return probability
+
+    raise ValueError(f"Unsupported distribution type: {distribution_type}")
+
+
+def generate_rhm_dataset_from_config(
+    exp_config: ExperimentConfig, yaml_config: dict[str, Any]
 ) -> tuple[Dataset, dict[str, Any]]:
-    """Generate raw RHM dataset for multiple hierarchical configurations."""
-    print("=" * 60)
-    print("GENERATING RAW RHM DATASET")
-    print("=" * 60)
+    """Generate RHM dataset using experiment config and YAML parameters."""
+    # Extract configuration sections
+    rhm_params = yaml_config["rhm_params"]
+    configurations = yaml_config["configurations"]
+    distribution_config = yaml_config["distribution"]
 
-    # Convert to Path object
-    output_path = Path(output_dir)
+    logger.info(f"Generating dataset for experiment: {exp_config.to_name()}")
+    logger.info(f"Distribution type: {distribution_config['type']}")
+    logger.info(f"Configurations: {len(configurations)} (L,m) pairs")
 
     # Initialize storage for all sequences and metadata
     all_sequences = []
@@ -41,49 +96,62 @@ def generate_raw_rhm_dataset(
     all_config_m = []
     all_sequence_lengths = []
     all_rules = {}
-
-    # Statistics tracking
-    total_sequences = 0
     config_stats = {}
 
-    print(f"Configurations to generate: {len(config_list)}")
-    print(f"Samples per configuration: {samples_per_config}")
-    print(f"Total target sequences: {len(config_list) * samples_per_config}")
-    print()
+    total_sequences = 0
 
-    # Generate data for each configuration
-    for task_id, (L, m) in enumerate(config_list):
-        print(f"Generating Task {task_id}: L={L} (depth), m={m} (multiplicity)")
-        print("-" * 50)
+    # Generate data for each (L,m) configuration
+    for task_id, config in enumerate(configurations):
+        L, m = config["L"], config["m"]
+        logger.info(f"Generating Task {task_id}: L={L} (depth), m={m} (multiplicity)")
 
         try:
-            # Create RHM instance for this configuration
+            # Create initial RHM to get rules structure
+            temp_rhm = RandomHierarchyModel(
+                num_features=rhm_params["vocab_size"],
+                num_classes=rhm_params["num_classes"],
+                num_synonyms=m,
+                tuple_size=rhm_params["tuple_size"],
+                num_layers=L,
+                seed_rules=task_id + exp_config.seed,  # Unique rules per task
+                seed_sample=exp_config.seed,
+                train_size=1,  # Minimal size to get rules
+                replacement=True,
+                input_format="long",
+            )
+
+            # Create probability distribution for this configuration
+            probability = create_rule_probabilities(
+                temp_rhm.rules,
+                distribution_config["type"],
+                **{k: v for k, v in distribution_config.items() if k != "type"},
+            )
+
+            # Generate full dataset with proper probabilities
             rhm = RandomHierarchyModel(
-                num_features=vocab_size,  # vocabulary size (0-31, +1 shift makes it 1-32)
-                num_classes=num_classes,  # number of classes
-                num_synonyms=m,  # multiplicity parameter
-                tuple_size=tuple_size,  # size of low-level representations
-                num_layers=L,  # hierarchy depth
-                seed_rules=task_id,  # unique rules per task
-                seed_sample=seed_sample,  # consistent sampling across tasks
-                train_size=samples_per_config,
+                num_features=rhm_params["vocab_size"],
+                num_classes=rhm_params["num_classes"],
+                num_synonyms=m,
+                tuple_size=rhm_params["tuple_size"],
+                num_layers=L,
+                probability=probability,
+                seed_rules=task_id + exp_config.seed,
+                seed_sample=exp_config.seed,
+                train_size=rhm_params["samples_per_config"],
                 test_size=0,
-                input_format="long",  # integer sequences (1-based indexing)
-                replacement=True,  # allow sampling with replacement
+                replacement=True,  # Required for custom probabilities
+                input_format="long",
             )
 
             # Extract generated data
-            sequences = rhm.features  # Shape: [samples_per_config, variable_length]
-            labels = rhm.labels  # Shape: [samples_per_config] (not used in LM)
-            rules = rhm.rules  # Production rules dictionary
+            sequences = rhm.features
+            labels = rhm.labels
+            rules = rhm.rules
 
-            # Convert tensors to lists for HuggingFace compatibility
-            if hasattr(sequences, "tolist"):
-                sequences_list = sequences.tolist()
-            else:
-                sequences_list = [list(seq) for seq in sequences]
+            # Convert to lists for HuggingFace compatibility
+            sequences_list = sequences.tolist() if hasattr(sequences, "tolist") else [list(seq) for seq in sequences]
 
-            # Calculate statistics for this configuration
+            # Calculate statistics
             seq_lengths = [len(seq) for seq in sequences_list]
             config_stats[task_id] = {
                 "L": L,
@@ -93,14 +161,17 @@ def generate_raw_rhm_dataset(
                 "max_length": max(seq_lengths),
                 "avg_length": sum(seq_lengths) / len(seq_lengths),
                 "total_tokens": sum(seq_lengths),
+                "distribution_type": distribution_config["type"],
             }
 
-            # Store rules for this configuration
+            # Store rules and probability info
             all_rules[task_id] = {
                 "L": L,
                 "m": m,
                 "rules_dict": rules,
-                "vocab_range": f"1-{vocab_size}",  # RHM uses 1-based indexing
+                "probability_dict": probability,
+                "distribution_type": distribution_config["type"],
+                "vocab_range": f"1-{rhm_params['vocab_size']}",
                 "num_sequences": len(sequences_list),
             }
 
@@ -113,153 +184,171 @@ def generate_raw_rhm_dataset(
 
             total_sequences += len(sequences_list)
 
-            # Print statistics for this configuration
-            print(f"  ✓ Generated {len(sequences_list)} sequences")
-            print(f"  ✓ Length range: {min(seq_lengths)}-{max(seq_lengths)} tokens")
-            print(f"  ✓ Average length: {sum(seq_lengths) / len(seq_lengths):.1f} tokens")
-            print(f"  ✓ Total tokens: {sum(seq_lengths):,}")
-
-            # Save intermediate results if requested
-            if save_intermediate:
-                config_dir = output_path / "intermediate" / f"task_{task_id}_L{L}_m{m}"
-                config_dir.mkdir(parents=True, exist_ok=True)
-
-                # Save sequences and metadata for this config
-                config_data = {
-                    "sequences": sequences_list,
-                    "task_id": task_id,
-                    "L": L,
-                    "m": m,
-                    "rules": rules,
-                    "stats": config_stats[task_id],
-                }
-
-                with (config_dir / "config_data.pkl").open("wb") as f:
-                    pickle.dump(config_data, f)
-
-                print(f"  ✓ Saved intermediate results to {config_dir}")
-
-            print()
+            logger.info(f"  ✓ Generated {len(sequences_list)} sequences")
+            logger.info(f"  ✓ Length range: {min(seq_lengths)}-{max(seq_lengths)} tokens")
+            logger.info(f"  ✓ Total tokens: {sum(seq_lengths):,}")
 
         except Exception as e:
-            print(f"  ✗ Error generating task {task_id} (L={L}, m={m}): {e}")
-            print("  ✗ Skipping this configuration...")
-            print()
+            logger.info(f"  ✗ Error generating task {task_id} (L={L}, m={m}): {e}")
+            warnings.warn(f"Skipping configuration L={L}, m={m} due to error: {e}")
             continue
 
     # Create comprehensive metadata
+    max_L = max([config["L"] for config in configurations]) if configurations else 0
+
     metadata = {
-        "generation_params": {
-            "vocab_size": vocab_size,
-            "num_classes": num_classes,
-            "tuple_size": tuple_size,
-            "seed_sample": seed_sample,
-            "samples_per_config": samples_per_config,
+        "experiment_config": {
+            "name": exp_config.to_name(),
+            "dataset_type": exp_config.dataset_type,
+            "model_type": exp_config.model_type,
+            "mixture_type": exp_config.mixture_type,
+            "total_rules": exp_config.total_rules,
+            "seed": exp_config.seed,
         },
-        "configurations": [{"task_id": i, "L": L, "m": m} for i, (L, m) in enumerate(config_list)],
+        "generation_params": rhm_params,
+        "distribution_config": distribution_config,
+        "configurations": [{"task_id": i, **config} for i, config in enumerate(configurations)],
         "config_stats": config_stats,
         "rules": all_rules,
+        "derived_metadata": {
+            "max_L": max_L,
+            "total_rules_param": exp_config.total_rules,  # From experiment name
+            "actual_configs_generated": len(config_stats),
+        },
         "dataset_stats": {
             "total_sequences": total_sequences,
-            "total_configs": len(config_list),
+            "total_configs": len(configurations),
             "successful_configs": len(config_stats),
             "min_seq_length": min(all_sequence_lengths) if all_sequence_lengths else 0,
             "max_seq_length": max(all_sequence_lengths) if all_sequence_lengths else 0,
             "avg_seq_length": sum(all_sequence_lengths) / len(all_sequence_lengths) if all_sequence_lengths else 0,
             "total_tokens": sum(all_sequence_lengths),
-            "vocab_range": f"1-{vocab_size} (0 reserved for special tokens)",
+            "vocab_range": f"1-{rhm_params['vocab_size']} (0 reserved for special tokens)",
         },
     }
 
     # Create HuggingFace Dataset
-    print("Creating HuggingFace Dataset...")
+    logger.info("Creating HuggingFace Dataset...")
     dataset_dict = {
-        "input_ids": all_sequences,  # Raw integer sequences
-        "task_id": all_task_ids,  # Which configuration generated this sequence
-        "config_L": all_config_L,  # Hierarchy depth for this sequence
-        "config_m": all_config_m,  # Multiplicity for this sequence
-        "length": all_sequence_lengths,  # Length of this sequence
+        "input_ids": all_sequences,
+        "task_id": all_task_ids,
+        "config_L": all_config_L,
+        "config_m": all_config_m,
+        "length": all_sequence_lengths,
     }
 
     dataset = Dataset.from_dict(dataset_dict)
 
-    # Save complete dataset and metadata
-    output_path.mkdir(parents=True, exist_ok=True)
+    return dataset, metadata
+
+
+def save_dataset_with_metadata(dataset: Dataset, metadata: dict[str, Any], exp_config: ExperimentConfig, args) -> None:
+    """Save dataset and metadata using consistent experiment naming."""
+    paths = exp_config.get_paths()
+    dataset_dir = paths["dataset_dir"]
+
+    # Create output directory
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check for existing data
+    if (dataset_dir / "dataset").exists() and not args.overwrite:
+        if args.resume:
+            logger.info(f"Dataset already exists at {dataset_dir}, skipping generation")
+            return
+        raise FileExistsError(
+            f"Dataset already exists at {dataset_dir}. Use --overwrite to replace or --resume to skip."
+        )
 
     # Save HuggingFace dataset
-    dataset.save_to_disk(str(output_path / "raw_dataset"))
-    print(f"✓ Saved HuggingFace dataset to {output_path / 'raw_dataset'}")
+    dataset.save_to_disk(str(dataset_dir / "dataset"))
+    logger.info(f"✓ Saved HuggingFace dataset to {dataset_dir / 'dataset'}")
 
     # Save metadata
-    with (output_path / "metadata.pkl").open("wb") as f:
+    with (dataset_dir / "metadata.pkl").open("wb") as f:
         pickle.dump(metadata, f)
-    print(f"✓ Saved metadata to {output_path / 'metadata.pkl'}")
+    logger.info(f"✓ Saved metadata to {dataset_dir / 'metadata.pkl'}")
 
     # Save human-readable summary
-    with (output_path / "dataset_summary.txt").open("w") as f:
-        f.write("RHM DATASET GENERATION SUMMARY\n")
-        f.write("=" * 50 + "\n\n")
-        f.write(f"Total sequences: {total_sequences:,}\n")
-        f.write(f"Total tokens: {sum(all_sequence_lengths):,}\n")
-        f.write(f"Vocabulary: 1-{vocab_size} (0 reserved)\n")
-        f.write(f"Sequence length range: {min(all_sequence_lengths)}-{max(all_sequence_lengths)}\n")
-        f.write(f"Average sequence length: {sum(all_sequence_lengths) / len(all_sequence_lengths):.1f}\n\n")
+    with (dataset_dir / "dataset_summary.txt").open("w") as f:
+        f.write(f"RHM DATASET: {exp_config.to_name()}\n")
+        f.write("=" * 60 + "\n\n")
+        f.write("Experiment Parameters:\n")
+        f.write(f"  Dataset Type: {exp_config.dataset_type}\n")
+        f.write(f"  Model Type: {exp_config.model_type}\n")
+        f.write(f"  Mixture Type: {exp_config.mixture_type}\n")
+        f.write(f"  Total Rules: {exp_config.total_rules}\n")
+        f.write(f"  Seed: {exp_config.seed}\n\n")
 
-        f.write("CONFIGURATION DETAILS:\n")
-        f.write("-" * 30 + "\n")
-        for task_id, stats in config_stats.items():
-            f.write(f"Task {task_id}: L={stats['L']}, m={stats['m']}\n")
-            f.write(f"  Sequences: {stats['num_sequences']:,}\n")
-            f.write(f"  Length: {stats['min_length']}-{stats['max_length']} (avg: {stats['avg_length']:.1f})\n")
-            f.write(f"  Tokens: {stats['total_tokens']:,}\n\n")
+        f.write("Dataset Statistics:\n")
+        f.write(f"  Total sequences: {metadata['dataset_stats']['total_sequences']:,}\n")
+        f.write(f"  Total tokens: {metadata['dataset_stats']['total_tokens']:,}\n")
+        f.write(f"  Vocabulary: {metadata['dataset_stats']['vocab_range']}\n")
+        f.write(
+            f"  Sequence length: {metadata['dataset_stats']['min_seq_length']}-{metadata['dataset_stats']['max_seq_length']}\n"
+        )
+        f.write(f"  Average length: {metadata['dataset_stats']['avg_seq_length']:.1f}\n")
+        f.write(f"  Distribution: {metadata['distribution_config']['type']}\n\n")
 
-    print(f"✓ Saved summary to {output_path / 'dataset_summary.txt'}")
+        f.write("Configuration Details:\n")
+        for task_id, stats in metadata["config_stats"].items():
+            f.write(f"  Task {task_id}: L={stats['L']}, m={stats['m']}\n")
+            f.write(f"    Sequences: {stats['num_sequences']:,}, Tokens: {stats['total_tokens']:,}\n")
 
-    # Final summary
-    print("\n" + "=" * 60)
-    print("RAW DATASET GENERATION COMPLETE")
-    print("=" * 60)
-    print(f"Total sequences generated: {total_sequences:,}")
-    print(f"Total tokens: {sum(all_sequence_lengths):,}")
-    print(f"Successful configurations: {len(config_stats)}/{len(config_list)}")
-    print(f"Dataset saved to: {output_path}")
-    print("=" * 60)
-
-    return dataset, metadata
+    logger.info(f"✓ Saved summary to {dataset_dir / 'dataset_summary.txt'}")
 
 
-def generate_example_dataset():
-    """Generate an example RHM dataset with multiple configurations"""
-    args = parse_args()
-    # Define hierarchical configurations to test
-    config_list = [
-        (2, 2),  # Shallow, low multiplicity
-        (3, 2),  # Medium depth, low multiplicity
-        (2, 4),  # Shallow, high multiplicity
-        (4, 2),  # Deep, low multiplicity
-        (3, 3),  # Medium depth, medium multiplicity
-    ]
+def main():
+    """Main dataset generation function."""
+    parser = create_dataset_parser()
+    args = parser.parse_args()
 
-    # Generate the dataset
-    dataset, metadata = generate_raw_rhm_dataset(
-        config_list=config_list,
-        samples_per_config=1000,
-        output_dir=settings.PATH.train_dir / "raw",
-        vocab_size=32,
-        num_classes=10,
-        save_intermediate=True,
-    )
+    # Convert to experiment config
+    exp_config = parse_experiment_config(args)
+    paths = exp_config.get_paths()
 
-    return dataset, metadata
+    # Load dataset configuration from YAML
+    config_path = paths["config_dir"] / "dataset.yaml"
+
+    try:
+        yaml_config = load_yaml_config(config_path)
+    except FileNotFoundError:
+        logger.info(f"Error: Configuration file not found at {config_path}")
+        logger.info("Please ensure the YAML configuration exists before running dataset generation.")
+        return 1
+
+    if args.validate_only:
+        logger.info(f"Configuration validation successful for {exp_config.to_name()}")
+        logger.info(f"Configurations to generate: {len(yaml_config['configurations'])}")
+        return 0
+
+    if args.verbose:
+        logger.info(f"Experiment: {exp_config.to_name()}")
+        logger.info(f"Config directory: {paths['config_dir']}")
+        logger.info(f"Output directory: {paths['dataset_dir']}")
+
+    # Generate dataset
+    try:
+        dataset, metadata = generate_rhm_dataset_from_config(exp_config, yaml_config)
+        save_dataset_with_metadata(dataset, metadata, exp_config, args)
+
+        logger.info(f"\n{'=' * 60}")
+        logger.info("DATASET GENERATION COMPLETE")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"Experiment: {exp_config.to_name()}")
+        logger.info(f"Total sequences: {len(dataset):,}")
+        logger.info(f"Output directory: {paths['dataset_dir']}")
+        logger.info(f"{'=' * 60}")
+
+        return 0
+
+    except Exception as e:
+        logger.info(f"Error during dataset generation: {e}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":
-    # Generate example dataset
-    dataset, metadata = generate_example_dataset()
-
-    # Quick inspection
-    print("\nDataset inspection:")
-    print(f"Number of sequences: {len(dataset)}")
-    print(f"First sequence: {dataset[0]['input_ids'][:20]}...")  # Show first 20 tokens
-    print(f"First sequence length: {dataset[0]['length']}")
-    print(f"First sequence config: L={dataset[0]['config_L']}, m={dataset[0]['config_m']}")
+    exit(main())
