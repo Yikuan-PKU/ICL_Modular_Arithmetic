@@ -1,0 +1,31 @@
+# config/uniform_clm_allmix_576_42/dataset.yaml
+rhm_params:
+  vocab_size: 32
+  num_classes: 10
+  tuple_size: 2
+  samples_per_config: 1000
+
+configurations:
+  - L: 2
+    m: 2
+  - L: 3
+    m: 2
+  - L: 2
+    m: 4
+  - L: 4
+    m: 2
+  - L: 3
+    m: 3
+
+distribution:
+  type: "uniform"
+  zipf_alpha: 1.0
+
+metadata:
+  description: "Mixed complexity dataset for ICL experiments"
+  experiment_notes: "Testing various (L,m) configurations with uniform rule sampling"
+
+validation:
+  min_sequence_length: 4
+  max_sequence_length: 100
+  vocab_check: true
