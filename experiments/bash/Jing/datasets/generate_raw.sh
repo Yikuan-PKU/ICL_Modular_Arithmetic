@@ -11,14 +11,13 @@ SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/datasets"
 
 
 # Define experiment parameters (only need to set once)
-DATASET_TYPE="zipf"
-MODEL_TYPE="clm"
+DATASET_TYPE="zipf" # or uniform
 MIXTURE_TYPE="allmix"
 TOTAL_RULES=576
 SEED=42
 
 # Construct shared arguments
-SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --mixture-type $MIXTURE_TYPE --total-rules $TOTAL_RULES --seed $SEED"
+SHARED_ARGS="--dataset-type $DATASET_TYPE --mixture-type $MIXTURE_TYPE --total-rules $TOTAL_RULES --seed $SEED"
 
 # Optional pipeline controls
 PIPELINE_ARGS="--verbose"

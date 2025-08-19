@@ -10,7 +10,7 @@ import yaml
 from datasets import Dataset
 
 from ICL.datasets.RHM import RandomHierarchyModel
-from ICL.settings import ExperimentConfig, create_base_parser, parse_experiment_config
+from ICL.settings import DatasetConfig, create_base_parser, parse_dataset_config
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def create_dataset_parser():
     """Create argument parser for dataset generation."""
-    parser = create_base_parser()
+    parser = create_base_parser(require_model_type=False)
     parser.description = "Generate RHM dataset for hierarchical learning experiments"
 
     # Dataset-specific arguments
@@ -77,15 +77,15 @@ def create_rule_probabilities(
 
 
 def generate_rhm_dataset_from_config(
-    exp_config: ExperimentConfig, yaml_config: dict[str, Any]
+    dataset_config: DatasetConfig, yaml_config: dict[str, Any]
 ) -> tuple[Dataset, dict[str, Any]]:
-    """Generate RHM dataset using experiment config and YAML parameters."""
+    """Generate RHM dataset using dataset config and YAML parameters."""
     # Extract configuration sections
     rhm_params = yaml_config["rhm_params"]
     configurations = yaml_config["configurations"]
     distribution_config = yaml_config["distribution"]
 
-    logger.info(f"Generating dataset for experiment: {exp_config.to_name()}")
+    logger.info(f"Generating dataset: {dataset_config.to_name()}")
     logger.info(f"Distribution type: {distribution_config['type']}")
     logger.info(f"Configurations: {len(configurations)} (L,m) pairs")
 
@@ -113,8 +113,8 @@ def generate_rhm_dataset_from_config(
                 num_synonyms=m,
                 tuple_size=rhm_params["tuple_size"],
                 num_layers=L,
-                seed_rules=task_id + exp_config.seed,  # Unique rules per task
-                seed_sample=exp_config.seed,
+                seed_rules=task_id + dataset_config.seed,  # Unique rules per task
+                seed_sample=dataset_config.seed,
                 train_size=1,  # Minimal size to get rules
                 replacement=True,
                 input_format="long",
@@ -135,8 +135,8 @@ def generate_rhm_dataset_from_config(
                 tuple_size=rhm_params["tuple_size"],
                 num_layers=L,
                 probability=probability,
-                seed_rules=task_id + exp_config.seed,
-                seed_sample=exp_config.seed,
+                seed_rules=task_id + dataset_config.seed,
+                seed_sample=dataset_config.seed,
                 train_size=rhm_params["samples_per_config"],
                 test_size=0,
                 replacement=True,  # Required for custom probabilities
@@ -197,14 +197,6 @@ def generate_rhm_dataset_from_config(
     max_L = max([config["L"] for config in configurations]) if configurations else 0
 
     metadata = {
-        "experiment_config": {
-            "name": exp_config.to_name(),
-            "dataset_type": exp_config.dataset_type,
-            "model_type": exp_config.model_type,
-            "mixture_type": exp_config.mixture_type,
-            "total_rules": exp_config.total_rules,
-            "seed": exp_config.seed,
-        },
         "generation_params": rhm_params,
         "distribution_config": distribution_config,
         "configurations": [{"task_id": i, **config} for i, config in enumerate(configurations)],
@@ -212,7 +204,7 @@ def generate_rhm_dataset_from_config(
         "rules": all_rules,
         "derived_metadata": {
             "max_L": max_L,
-            "total_rules_param": exp_config.total_rules,  # From experiment name
+            "total_rules_param": dataset_config.total_rules,  # From experiment name
             "actual_configs_generated": len(config_stats),
         },
         "dataset_stats": {
@@ -242,14 +234,13 @@ def generate_rhm_dataset_from_config(
     return dataset, metadata
 
 
-def save_dataset_with_metadata(dataset: Dataset, metadata: dict[str, Any], exp_config: ExperimentConfig, args) -> None:
-    """Save dataset and metadata using consistent experiment naming."""
-    paths = exp_config.get_paths()
+def save_dataset_with_metadata(dataset: Dataset, metadata: dict[str, Any], dataset_config: DatasetConfig, args) -> None:
+    """Save dataset and metadata using dataset naming."""
+    paths = dataset_config.get_dataset_paths()
     dataset_dir = paths["dataset_dir"]
 
     # Create output directory
     dataset_dir.mkdir(parents=True, exist_ok=True)
-
     # Check for existing data
     if (dataset_dir / "dataset").exists() and not args.overwrite:
         if args.resume:
@@ -270,14 +261,13 @@ def save_dataset_with_metadata(dataset: Dataset, metadata: dict[str, Any], exp_c
 
     # Save human-readable summary
     with (dataset_dir / "dataset_summary.txt").open("w") as f:
-        f.write(f"RHM DATASET: {exp_config.to_name()}\n")
+        f.write(f"RHM DATASET: {dataset_config.to_name()}\n")
         f.write("=" * 60 + "\n\n")
         f.write("Experiment Parameters:\n")
-        f.write(f"  Dataset Type: {exp_config.dataset_type}\n")
-        f.write(f"  Model Type: {exp_config.model_type}\n")
-        f.write(f"  Mixture Type: {exp_config.mixture_type}\n")
-        f.write(f"  Total Rules: {exp_config.total_rules}\n")
-        f.write(f"  Seed: {exp_config.seed}\n\n")
+        f.write(f"  Dataset Type: {dataset_config.dataset_type}\n")
+        f.write(f"  Mixture Type: {dataset_config.mixture_type}\n")
+        f.write(f"  Total Rules: {dataset_config.total_rules}\n")
+        f.write(f"  Seed: {dataset_config.seed}\n\n")
 
         f.write("Dataset Statistics:\n")
         f.write(f"  Total sequences: {metadata['dataset_stats']['total_sequences']:,}\n")
@@ -302,12 +292,12 @@ def main():
     parser = create_dataset_parser()
     args = parser.parse_args()
 
-    # Convert to experiment config
-    exp_config = parse_experiment_config(args)
-    paths = exp_config.get_paths()
+    # Convert to dataset config (no model type needed)
+    dataset_config = parse_dataset_config(args)
+    paths = dataset_config.get_dataset_paths()
 
     # Load dataset configuration from YAML
-    config_path = paths["config_dir"] / "dataset.yaml"
+    config_path = paths["config_dir"] / "train_dataset.yaml"
 
     try:
         yaml_config = load_yaml_config(config_path)
@@ -317,24 +307,24 @@ def main():
         return 1
 
     if args.validate_only:
-        logger.info(f"Configuration validation successful for {exp_config.to_name()}")
+        logger.info(f"Configuration validation successful for {dataset_config.to_name()}")
         logger.info(f"Configurations to generate: {len(yaml_config['configurations'])}")
         return 0
 
     if args.verbose:
-        logger.info(f"Experiment: {exp_config.to_name()}")
+        logger.info(f"Dataset: {dataset_config.to_name()}")
         logger.info(f"Config directory: {paths['config_dir']}")
         logger.info(f"Output directory: {paths['dataset_dir']}")
 
     # Generate dataset
     try:
-        dataset, metadata = generate_rhm_dataset_from_config(exp_config, yaml_config)
-        save_dataset_with_metadata(dataset, metadata, exp_config, args)
+        dataset, metadata = generate_rhm_dataset_from_config(dataset_config, yaml_config)
+        save_dataset_with_metadata(dataset, metadata, dataset_config, args)
 
         logger.info(f"\n{'=' * 60}")
         logger.info("DATASET GENERATION COMPLETE")
         logger.info(f"{'=' * 60}")
-        logger.info(f"Experiment: {exp_config.to_name()}")
+        logger.info(f"Dataset: {dataset_config.to_name()}")
         logger.info(f"Total sequences: {len(dataset):,}")
         logger.info(f"Output directory: {paths['dataset_dir']}")
         logger.info(f"{'=' * 60}")
