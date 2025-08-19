@@ -7,10 +7,10 @@
 #SBATCH --no-requeue
 #SBATCH -A qi_g1
 #SBATCH --qos=qil40
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --overcommit
-#SBATCH --mincpus=9
-#SBATCH --output=~/lustre1/qi_pkuhpc/ykzhang/ICL_RHM/experiments/bash/yk/datasets/uniform.log
+#SBATCH --mincpus=1
+#SBATCH --output=~/lustre1/qi_pkuhpc/ykzhang/ICL_RHM/ICL_Modular_Arithmetic/experiments/bash/yk/datasets/uniform.log
 
 
 
@@ -18,7 +18,7 @@ source ~/lustre1/ykzhang/source/miniconda.sh
 
 
 
-SCRIPT_ROOT="~/lustre1/qi_pkuhpc/ykzhang/ICL_RHM/src/scripts/datasets"
+SCRIPT_ROOT="~/lustre1/qi_pkuhpc/ykzhang/ICL_RHM/ICL_Modular_Arithmetic/src/scripts/datasets"
 
 
 # Define experiment parameters (only need to set once)

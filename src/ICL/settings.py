@@ -14,7 +14,6 @@ from pathlib import Path as _Path
 @_dataclasses.dataclass
 class _MyPathSettings:
     DATA_DIR: _Path = _Path(_os.environ.get("DATA_DIR", "data/"))
-
     COML_SERVERS: tuple = tuple({"oberon", "oberon2", "habilis", *[f"puck{i}" for i in range(1, 7)]})
     KNOWN_HOSTS: tuple[str, ...] = (*COML_SERVERS, "mbp-de-jliu.home")
 
@@ -30,7 +29,7 @@ class _MyPathSettings:
                 self.DATA_DIR = _Path("./src/data")
             else:
                 # fallback for unknown hosts
-                self.DATA_DIR = _Path("data/")
+                self.DATA_DIR = _Path("/lustre1/qi_pkuhpc/ykzhang/ICL_RHM")
 
         if not self.DATA_DIR.is_dir():
             _warnings.warn(
