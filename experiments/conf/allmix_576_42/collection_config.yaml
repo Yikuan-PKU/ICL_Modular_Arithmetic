@@ -1,0 +1,64 @@
+# ICL Evaluation Collection Configuration
+# This file configures the collection phase of ICL evaluation
+
+base_config:
+  # Target model configurations to evaluate (L, m pairs)
+  # L = depth, m = multiplicity/synonyms
+  target_configs:
+    - [2, 2]  # Basic configuration
+    - [2, 3]  # Increased synonyms
+    - [2, 4]
+    - [3, 2]  # Increased depth
+    - [3, 3]  # Balanced increase
+    - [3, 4]
+    - [4, 2]  # High depth
+    - [4, 3]
+    - [4, 4]  # High complexity
+  
+  # Training diversity levels to include
+  # These correspond to the number of training examples (n_train)
+  diversity_levels: [8, 16, 32, 64, 128]
+  
+  # Model types to evaluate
+  model_types: ["causal_lm", "mlm"]
+
+collection_config:
+  evaluation_parameters:
+    # Context sizes for ICL evaluation
+    # Number of examples provided in context before query
+    context_sizes: [1, 2, 3, 4, 5, 6, 8]
+    
+    # Transfer conditions to test
+    transfer_conditions: 
+      - "within_config"  # Same config as training
+      - "cross_L"        # Different depth (L)
+      - "cross_m"        # Different multiplicity (m)
+      - "cross_config"   # Different both L and m
+    
+    # Control types for baseline comparison
+    control_types: 
+      - "normal"            # Standard ICL
+      - "shuffled_context"  # Shuffled context order
+      - "random_context"    # Random context examples
+  
+  execution_parameters:
+    # Batch processing settings
+    batch_size: 32
+    max_sequences_per_condition: 200
+    
+    # Data collection options
+    capture_attention: true          # Capture attention patterns
+    save_intermediate: true          # Save partial results
+    intermediate_save_frequency: 5   # Save every N models
+  
+  memory_management:
+    # Memory optimization settings
+    clear_cache_frequency: 10        # Clear GPU cache every N models
+    max_memory_usage_gb: 12.0       # Maximum GPU memory usage
+  
+  error_handling:
+    # Error recovery settings
+    max_model_failures: 5           # Max consecutive failures before stopping
+    retry_failed_models: true       # Retry failed model evaluations
+    failure_retry_delay: 60         # Seconds between retries
+
