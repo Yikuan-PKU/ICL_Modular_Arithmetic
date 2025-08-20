@@ -88,4 +88,7 @@ python $SCRIPT_ROOT/train.py $SHARED_ARGS --dry-run
 
 # Step 2: Train model
 echo "Step 2: Training model..."
+
 python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS
+
+
