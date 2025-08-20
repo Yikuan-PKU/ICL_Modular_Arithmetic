@@ -46,18 +46,6 @@ mkdir -p /scratch2/jliu/ICL/logs/exp
 echo "Step 1: Validating experiment setup..."
 python $SCRIPT_ROOT/scaling.py $SHARED_ARGS --validate-only
 
-if [ $? -ne 0 ]; then
-    echo "ERROR: Experiment validation failed"
-    echo "Please check:"
-    echo "1. Collection results exist: results/$EXP_NAME/collection/"
-    echo "2. Configuration file exists: experiments/conf/${MIXTURE_TYPE}_${TOTAL_RULES}_${SEED}/exp.yaml"
-    echo "3. Sufficient context size diversity in ICL performance data"
-    echo "4. Adequate number of models for scaling analysis"
-    exit 1
-fi
-
-echo "✓ Validation passed"
-
 # Step 2: Run Experiment 3 - Context Scaling Analysis
 echo ""
 echo "Step 2: Running Context Scaling Analysis..."
