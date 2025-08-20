@@ -55,5 +55,5 @@ metric_for_best_model: "eval_loss"
 seed: 42
 
 # Logging
-report_to: ["wandb"]
+report_to: ["tensorboard"]
 run_name: "uniform_allmix_576_42_clm"
