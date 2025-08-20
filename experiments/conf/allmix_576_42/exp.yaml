@@ -1,0 +1,117 @@
+# ICL Experiment Analysis Configuration
+# This file should be placed in: experiments/conf/{experiment_name}/exp.yaml
+# Where {experiment_name} = {dataset_type}_{mixture_type}_{total_rules}_{seed}
+
+# Base configuration for experiment discovery
+base_config:
+  # Auto-discover collection results from Phase 1
+  collection_results_dir: "auto"  # Will find uniform_allmix_576_42/collection/
+  
+  # Validation settings
+  require_attention_data: false  # Set true if attention analysis needed
+  min_models_required: 10       # Minimum models needed for analysis
+
+# Individual experiment configurations
+experiment_config:
+  
+  # Experiment 1: ICL Emergence Analysis
+  exp1_emergence:
+    enabled: true
+    
+    # Emergence detection parameters
+    emergence_threshold: 0.5      # Accuracy threshold for emergence detection
+    baseline_controls: 
+      - "shuffled_context"        # Shuffled context order control
+      - "random_context"          # Random context examples control
+    
+    # Analysis parameters
+    min_context_sizes: 3          # Minimum context sizes needed per model
+    scaling_analysis: true        # Analyze context scaling patterns
+    
+    # Statistical thresholds
+    strong_scaling_threshold: 0.1  # Slope threshold for "strong" scaling
+    
+  # Experiment 2: Transfer Learning Analysis  
+  exp2_transfer:
+    enabled: true
+    
+    # Transfer success criteria
+    success_threshold: 0.5        # Accuracy threshold for transfer success
+    transfer_types:
+      - "depth"                   # Cross-L transfer (depth changes)
+      - "synonym"                 # Cross-m transfer (synonym changes) 
+      - "full"                    # Cross-config transfer (both change)
+    
+    # Analysis parameters
+    degradation_thresholds:
+      severe: 0.2                 # Threshold for severe degradation
+      improvement: 0.0            # Threshold for transfer improvement
+    
+    # Matrix analysis
+    create_transfer_matrix: true  # Create train→test transfer matrix
+    
+  # Experiment 3: Context Scaling Analysis
+  exp3_scaling:
+    enabled: true
+    
+    # Scaling law fitting
+    scaling_laws:
+      - "exponential"             # a*(1-exp(-b*k)) saturation
+      - "power"                   # a*k^b power law
+      - "logarithmic"             # a*log(k)+b logarithmic
+    
+    # Performance thresholds for optimal context analysis
+    performance_thresholds: [0.5, 0.7, 0.9]
+    
+    # Complexity analysis
+    analyze_complexity_effects: true
+    analyze_training_size_effects: true
+    
+  # Experiment 4: Attention Pattern Analysis
+  exp4_attention:
+    enabled: false               # Disabled by default (requires attention data)
+    
+    # Attention analysis parameters
+    attention_layers: "all"      # Which layers to analyze ("all" or list)
+    attention_heads: "all"       # Which heads to analyze ("all" or list)
+    
+    # Pattern detection
+    detect_induction_heads: true
+    detect_copying_heads: true
+    analyze_attention_entropy: true
+
+# Output configuration
+output_config:
+  # Report generation
+  generate_reports: true         # Generate HTML reports
+  save_intermediate: true        # Save intermediate results
+  create_visualizations: true    # Create visualization plots
+  
+  # Visualization settings
+  visualization_format: "png"    # Plot format (png, pdf, svg)
+  high_resolution: true          # High-DPI plots (300 DPI)
+  
+  # Data export
+  export_metrics_csv: true       # Export metrics as CSV
+  export_summary_json: true      # Export summary as JSON
+  
+  # Custom output paths (optional)
+  custom_output_suffix: ""       # Append to auto-generated output dir
+
+# Advanced configuration (optional)
+advanced_config:
+  # Parallel processing
+  n_jobs: 1                      # Number of parallel jobs (-1 for all cores)
+  
+  # Memory management  
+  batch_size: 1000              # Batch size for large dataset processing
+  low_memory_mode: false        # Reduce memory usage (slower processing)
+  
+  # Validation and debugging
+  strict_validation: true       # Strict data validation
+  debug_mode: false             # Enable debug output
+  random_seed: 42               # Random seed for reproducibility
+  
+  # Statistical settings
+  confidence_level: 0.95        # Confidence level for statistical tests
+  min_samples_per_group: 5      # Minimum samples required per analysis group
