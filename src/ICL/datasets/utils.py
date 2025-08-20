@@ -72,7 +72,7 @@ def base2dec(t, b):
 
 
 #############################################
-# RHM-related util func
+# Training dataset util func
 #############################################
 
 

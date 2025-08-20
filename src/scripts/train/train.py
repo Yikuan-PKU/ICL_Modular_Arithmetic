@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RHM Model Training Main Script with Hierarchical Config Support"""
+"""RHM Model Training Main Script with Flattened Config Support"""
 
 import argparse
 import json
@@ -7,12 +7,13 @@ import logging
 import typing as t
 from pathlib import Path
 
-import yaml
 from transformers import set_seed
 
 from ICL.settings import (
     ModelConfig,
     create_base_parser,
+    get_experiment_config_name,
+    load_experiment_config,
     parse_model_config,
     validate_args,
 )
@@ -27,9 +28,9 @@ logger = logging.getLogger(__name__)
 
 
 def create_training_parser() -> argparse.ArgumentParser:
-    """Create argument parser for training with hierarchical config support."""
+    """Create argument parser for training with flattened config support."""
     parser = create_base_parser(require_model_type=True)
-    parser.description = "Train RHM models with hierarchical configuration"
+    parser.description = "Train RHM models with flattened configuration"
 
     # Training-specific arguments
     training_group = parser.add_argument_group("Training Configuration")
@@ -44,27 +45,26 @@ def create_training_parser() -> argparse.ArgumentParser:
 
 
 def load_model_yaml_config(model_config: ModelConfig) -> dict[str, t.Any]:
-    """Load model-specific YAML configuration."""
-    paths = model_config.get_model_paths()
-    config_path = paths["config_dir"] / "train.yaml"
+    """Load model-specific YAML configuration from simplified experiment structure."""
+    config_type = model_config.model_type  # "clm" or "mlm"
+    yaml_config = load_experiment_config(config_type, model_config.dataset_config)
 
-    if not config_path.exists():
-        logger.warning(f"Model config not found: {config_path}")
-        return {}
+    if yaml_config:
+        experiment_name = get_experiment_config_name(
+            model_config.dataset_config.dataset_type,
+            model_config.dataset_config.mixture_type,
+            model_config.dataset_config.total_rules,
+            model_config.dataset_config.seed,
+        )
+        logger.info(f"Loaded {config_type} config from simplified experiment directory {experiment_name}")
 
-    try:
-        with config_path.open("r", encoding="utf-8") as file:
-            yaml_config = yaml.safe_load(file)
+        # Log if dataset_type was auto-added for disambiguation
+        if "_dataset_type" in yaml_config:
+            logger.info(f"Auto-detected dataset_type: {yaml_config['_dataset_type']}")
+    else:
+        logger.warning(f"No {config_type} config found for experiment")
 
-        logger.info(f"Loaded model config from: {config_path}")
-        return yaml_config or {}
-
-    except yaml.YAMLError as e:
-        logger.error(f"Error parsing model YAML config {config_path}: {e}")
-        return {}
-    except Exception as e:
-        logger.error(f"Unexpected error loading model config {config_path}: {e}")
-        return {}
+    return yaml_config
 
 
 def load_yaml_overrides(config_path: str | Path | None) -> dict[str, t.Any]:
@@ -79,6 +79,8 @@ def load_yaml_overrides(config_path: str | Path | None) -> dict[str, t.Any]:
         return {}
 
     try:
+        import yaml
+
         with config_path.open("r", encoding="utf-8") as file:
             yaml_overrides = yaml.safe_load(file)
 
@@ -87,21 +89,18 @@ def load_yaml_overrides(config_path: str | Path | None) -> dict[str, t.Any]:
             return yaml_overrides
         return {}
 
-    except yaml.YAMLError as e:
-        logger.error(f"Error parsing override YAML file {config_path}: {e}")
-        return {}
     except Exception as e:
-        logger.error(f"Unexpected error loading override config {config_path}: {e}")
+        logger.error(f"Error loading override config {config_path}: {e}")
         return {}
 
 
 def create_training_config(model_config: ModelConfig, config_override_path: str | None = None) -> RHMTrainingConfig:
-    """Create training configuration from hierarchical configs and overrides."""
+    """Create training configuration from flattened configs and overrides."""
     # Start with defaults
     config = RHMTrainingConfig()
     logger.info("Starting with default RHMTrainingConfig")
 
-    # Load model-specific config
+    # Load model-specific config from flattened structure
     model_yaml = load_model_yaml_config(model_config)
 
     # Load override config if provided
@@ -113,17 +112,17 @@ def create_training_config(model_config: ModelConfig, config_override_path: str 
     # Apply model config
     if model_yaml:
         all_overrides.update(model_yaml)
-        logger.info(f"Applied {len(model_yaml)} model-specific parameters")
+        logger.info(f"Applied {len(model_yaml)} model-specific parameters from {model_config.model_type}.yaml")
 
     # Apply overrides
     if override_yaml:
         all_overrides.update(override_yaml)
         logger.info(f"Applied {len(override_yaml)} override parameters")
 
-    # Set hierarchical paths
+    # Set hierarchical paths (using train subdirectory)
     paths = model_config.get_model_paths()
     all_overrides["output_dir"] = str(paths["model_dir"])
-    all_overrides["dataset_path"] = str(paths["dataset_dir"])
+    all_overrides["dataset_path"] = str(paths["dataset_dir"])  # Points to train subdirectory
 
     # Set model type and task name
     all_overrides["task_name"] = model_config.model_type
@@ -169,6 +168,9 @@ def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.An
     train_meta = training_metadata.get("training_metadata", {})
     model_meta = training_metadata.get("model_config", {})
 
+    # Get paths using new structure
+    paths = model_config.get_model_paths()
+
     eval_metadata = {
         "config_L": train_meta.get("config_L", 2),
         "config_m": train_meta.get("config_m", 2),
@@ -178,14 +180,16 @@ def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.An
         "eval_seed": 123,
         "tokenizer_class": "RHMTokenizer",
         "experiment_name": model_config.to_name(),
-        "dataset_name": model_config.dataset_config.to_name(),
+        "dataset_name": model_config.dataset_config.to_base_name(),
         "dataset_path": train_meta.get("dataset_path"),
         "output_dir": str(output_dir),
         "shuffling_enabled": train_meta.get("shuffling_enabled", False),
         "shuffle_strategy": train_meta.get("shuffle_strategy"),
         "hierarchical_paths": {
-            "dataset_dir": model_meta.get("dataset_path"),
-            "model_dir": model_meta.get("model_output_path"),
+            "base_dataset_dir": str(paths["base_dataset_dir"]),
+            "train_dataset_dir": str(paths["dataset_dir"]),
+            "model_dir": str(paths["model_dir"]),
+            "config_dir": str(paths["config_dir"]),
         },
         "tokenizer_metadata": training_metadata.get("tokenizer_metadata", {}),
         "model_metadata": training_metadata.get("model_metadata", {}),
@@ -199,7 +203,7 @@ def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.An
 
 
 def main():
-    """Train RHM model using hierarchical configuration system."""
+    """Train RHM model using flattened configuration system."""
     # Parse arguments
     parser = create_training_parser()
     args = parser.parse_args()
@@ -207,7 +211,7 @@ def main():
     # Validate arguments
     validate_args(args)
 
-    # Convert to model config
+    # Convert to model config (dataset_config.is_eval will be False by default)
     model_config = parse_model_config(args)
 
     # Create training configuration
@@ -219,19 +223,22 @@ def main():
     if args.dry_run:
         logger.info("DRY RUN MODE - Configuration validation only")
         logger.info(f"Model config: {model_config.to_name()}")
-        logger.info(f"Dataset: {model_config.dataset_config.to_name()}")
+        logger.info(f"Dataset base: {model_config.dataset_config.to_base_name()}")
         logger.info(f"Model type: {model_config.model_type}")
         logger.info(f"Output directory: {training_config.output_dir}")
         logger.info(f"Dataset path: {training_config.dataset_path}")
         logger.info("✓ Configuration validation successful")
         return None
 
+    # Get paths for logging
+    paths = model_config.get_model_paths()
+
     # Log final configuration
     logger.info("=" * 60)
     logger.info("TRAINING CONFIGURATION")
     logger.info("=" * 60)
     logger.info(f"Experiment: {model_config.to_name()}")
-    logger.info(f"Dataset: {model_config.dataset_config.to_name()}")
+    logger.info(f"Dataset base: {model_config.dataset_config.to_base_name()}")
     logger.info(f"Model type: {model_config.model_type}")
     logger.info(f"Task: {training_config.task_name}")
     logger.info(f"Learning rate: {training_config.learning_rate}")
@@ -246,6 +253,8 @@ def main():
         logger.info(f"Shuffle strategy: {training_config.shuffle_strategy}")
     logger.info(f"Output dir: {training_config.output_dir}")
     logger.info(f"Dataset path: {training_config.dataset_path}")
+    logger.info(f"Base dataset dir: {paths['base_dataset_dir']}")
+    logger.info(f"Config dir: {paths['config_dir']}")
     logger.info("=" * 60)
 
     # Create model based on configuration
@@ -347,7 +356,7 @@ def main():
     logger.info("TRAINING COMPLETED SUCCESSFULLY")
     logger.info("=" * 60)
     logger.info(f"Experiment: {model_config.to_name()}")
-    logger.info(f"Dataset: {model_config.dataset_config.to_name()}")
+    logger.info(f"Dataset base: {model_config.dataset_config.to_base_name()}")
     logger.info(f"Results saved to: {training_config.output_dir}")
 
     # Log evaluation-ready info
@@ -362,8 +371,10 @@ def main():
     # Log hierarchical paths
     model_meta = metadata.get("model_config", {})
     logger.info("Hierarchical structure:")
-    logger.info(f"  Dataset path: {model_meta.get('dataset_path')}")
-    logger.info(f"  Model output: {model_meta.get('model_output_path')}")
+    logger.info(f"  Base dataset: {paths['base_dataset_dir']}")
+    logger.info(f"  Train dataset: {paths['dataset_dir']}")
+    logger.info(f"  Model output: {paths['model_dir']}")
+    logger.info(f"  Config dir: {paths['config_dir']}")
     logger.info("=" * 60)
 
     return results
