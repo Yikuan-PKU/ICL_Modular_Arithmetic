@@ -1,282 +1,299 @@
-"""Generate transfer evaluation dataset following training pipeline structure."""
+#!/usr/bin/env python3
+"""Generate ICL evaluation datasets for all four evaluation types."""
 
 import logging
-import pickle
 import typing as t
-from pathlib import Path
 
-from datasets import Dataset
-
-from ICL.datasets.eval import TransferConfig, TransferEvaluationGenerator
-from ICL.settings import (
-    PATH,
-    DatasetConfig,
-    create_base_parser,
-    get_experiment_config_name,
-    load_experiment_config,
-    parse_dataset_config,
+from ICL.datasets.evaluation.eval_builder import ICLEvaluationBuilder
+from ICL.datasets.evaluation.eval_config import create_default_eval_config, load_icl_eval_config_from_yaml
+from ICL.datasets.evaluation.eval_file_manager import (
+    EvalDirectoryManager,
+    check_evaluation_prerequisites,
+    load_generation_params_from_config,
 )
+from ICL.settings import DatasetConfig, create_base_parser, parse_dataset_config, validate_args
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def create_evaluation_parser():
-    """Create argument parser for evaluation dataset generation."""
-    parser = create_base_parser(require_model_type=False, require_eval_flag=True)
-    parser.description = "Generate transfer evaluation dataset for ICL experiments"
+def create_icl_eval_parser():
+    """Create argument parser for ICL evaluation generation."""
+    parser = create_base_parser(require_eval_flag=False)
+    parser.description = "Generate ICL evaluation datasets for four evaluation types"
 
     # Evaluation-specific arguments
-    eval_group = parser.add_argument_group("Evaluation Generation")
+    eval_group = parser.add_argument_group("ICL Evaluation Generation")
     eval_group.add_argument(
-        "--train-metadata-path", type=str, help="Path to training dataset metadata file (auto-detected if not provided)"
+        "--validate-only", action="store_true", help="Only validate configuration and check prerequisites"
+    )
+    eval_group.add_argument("--config-path", type=str, help="Path to YAML config file (auto-detected if not provided)")
+    eval_group.add_argument(
+        "--enable-types",
+        nargs="+",
+        choices=["memorization", "id_generalization", "ood_same_rule", "ood_transfer"],
+        help="Evaluation types to generate (default: all enabled in config)",
     )
     eval_group.add_argument(
-        "--train-config-idx", type=int, default=0, help="Index of training configuration to use (default: 0)"
-    )
-    eval_group.add_argument(
-        "--validate-only", action="store_true", help="Only validate configuration without generating data"
+        "--skip-existing", action="store_true", help="Skip generation if evaluation datasets already exist"
     )
 
     return parser
 
 
-def load_yaml_config(dataset_config: DatasetConfig) -> dict[str, t.Any]:
-    """Load YAML configuration file for evaluation from simplified experiment structure."""
-    yaml_config = load_experiment_config("eval_dataset", dataset_config)
+def discover_available_configurations(dataset_config: DatasetConfig) -> list[tuple[int, int]]:
+    """Discover available (L,M) configurations with train/validation splits."""
+    import re
 
-    if not yaml_config:
-        # Get simplified experiment config directory for better error message
-        experiment_name = get_experiment_config_name(
-            dataset_config.dataset_type, dataset_config.mixture_type, dataset_config.total_rules, dataset_config.seed
-        )
-        config_path = PATH.conf_dir / experiment_name / "eval_dataset.yaml"
+    from ICL.settings import PATH
+
+    # Look for existing split datasets
+    pattern = rf"{dataset_config.dataset_type}_{dataset_config.num_seeds}_L(\d+)_M(\d+)"
+    configurations = []
+
+    datasets_dir = PATH.dataset_root
+    if not datasets_dir.exists():
+        raise FileNotFoundError(f"Datasets directory not found: {datasets_dir}")
+
+    for dataset_dir in datasets_dir.iterdir():
+        if dataset_dir.is_dir():
+            match = re.match(pattern, dataset_dir.name)
+            if match:
+                L, m = int(match.group(1)), int(match.group(2))
+
+                # Check if train and validation splits exist
+                train_dir = dataset_dir / "train"
+                val_dir = dataset_dir / "validation"
+
+                if train_dir.exists() and val_dir.exists():
+                    # Verify they have seed directories
+                    train_seeds = any(
+                        (train_dir / item).is_dir() and item.name.startswith("seed_") for item in train_dir.iterdir()
+                    )
+                    val_seeds = any(
+                        (val_dir / item).is_dir() and item.name.startswith("seed_") for item in val_dir.iterdir()
+                    )
+
+                    if train_seeds and val_seeds:
+                        configurations.append((L, m))
+                        logger.info(f"Found split data for L={L}, m={m}")
+
+    if not configurations:
         raise FileNotFoundError(
-            f"Evaluation configuration not found at {config_path}. "
-            f"Please ensure eval_dataset.yaml exists in the config directory {experiment_name}/. "
-            f"Note: Config directories use simplified naming without dataset_type prefix."
+            f"No split datasets found matching pattern: {pattern}\nPlease run train/validation splitting first."
         )
 
-    return yaml_config
+    return sorted(configurations)
 
 
-def auto_detect_training_metadata(dataset_config: DatasetConfig) -> Path:
-    """Auto-detect training metadata path from dataset config."""
-    # Create a training dataset config (non-eval version)
-    training_config = DatasetConfig(
-        dataset_type=dataset_config.dataset_type,
-        mixture_type=dataset_config.mixture_type,
-        total_rules=dataset_config.total_rules,
-        seed=dataset_config.seed,
-        is_eval=False,  # Always use training dataset for metadata
+def load_eval_config_for_LM(dataset_config: DatasetConfig, L: int, m: int) -> t.Any:
+    """Load ICL evaluation configuration for specific (L,M) configuration."""
+    import yaml
+
+    paths = dataset_config.get_config_paths(L, m)
+    config_path = paths["config_dir"] / "generate_eval.yaml"
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+    with config_path.open("r") as f:
+        yaml_config = yaml.safe_load(f)
+
+    # Check if eval_config exists in YAML
+    if "eval_config" in yaml_config:
+        return load_icl_eval_config_from_yaml(yaml_config)
+    logger.warning(f"No eval_config found in {config_path}, using default configuration")
+    return create_default_eval_config()
+
+
+def generate_evaluation_for_configuration(
+    L: int,
+    m: int,
+    dataset_config: DatasetConfig,
+    enable_types: list[str] | None = None,
+    skip_existing: bool = False,
+    overwrite: bool = False,
+) -> bool:
+    """Generate ICL evaluation datasets for a single (L,M) configuration.
+
+    Returns:
+        True if successful, False if skipped or failed
+
+    """
+    logger.info(f"Processing L={L}, m={m}")
+
+    # Get paths for this configuration
+    paths = dataset_config.get_config_paths(L, m)
+    base_dir = paths["dataset_dir"].parent  # Remove /train to get base
+
+    # Initialize directory manager
+    dir_manager = EvalDirectoryManager(base_dir)
+
+    # Check prerequisites
+    prereq_results = check_evaluation_prerequisites(base_dir)
+
+    if not prereq_results["ready_for_evaluation"]:
+        logger.error(f"  Prerequisites not met for L={L}, m={m}")
+        logger.error(f"  Missing: {[k for k, v in prereq_results.items() if not v and k.endswith('_exists')]}")
+        return False
+
+    # Check if evaluation already exists
+    existing_eval = dir_manager.check_eval_exists()
+    if skip_existing and any(existing_eval.values()):
+        logger.info(f"  Evaluation already exists for L={L}, m={m}, skipping")
+        return True
+
+    # Load configuration
+    eval_config = load_eval_config_for_LM(dataset_config, L, m)
+
+    # Override enabled types if specified
+    if enable_types:
+        # Temporarily modify config
+        for eval_type in ["memorization", "id_generalization", "ood_same_rule", "ood_transfer"]:
+            attr = getattr(eval_config, eval_type)
+            attr.enable = eval_type in enable_types
+
+    enabled_types = eval_config.get_enabled_types()
+    logger.info(f"  Enabled types: {enabled_types}")
+
+    if not enabled_types:
+        logger.warning(f"  No evaluation types enabled for L={L}, m={m}")
+        return False
+
+    # Discover training seeds
+    train_seeds = dir_manager.discover_train_seeds()
+    logger.info(f"  Training seeds: {train_seeds}")
+
+    # Load generation parameters
+    generation_params = load_generation_params_from_config(paths["config_dir"])
+    logger.info(f"  Generation params: {generation_params}")
+
+    # Initialize evaluation builder
+    builder = ICLEvaluationBuilder(eval_config, train_seeds)
+
+    # Create evaluation directories
+    dir_manager.create_eval_directories(enabled_types, overwrite=overwrite)
+
+    # Generate evaluation dataset
+    logger.info("  Generating evaluation datasets...")
+    evaluation_data = builder.generate_complete_evaluation_dataset(
+        source_config=(L, m),
+        train_dir=dir_manager.train_dir,
+        validation_dir=dir_manager.validation_dir,
+        generation_params=generation_params,
+        output_dir=dir_manager.eval_dir if eval_config.save_intermediate else None,
     )
 
-    training_paths = training_config.get_dataset_paths()
-    metadata_path = training_paths["dataset_dir"] / "metadata.pkl"
+    # Save evaluation datasets
+    logger.info("  Saving evaluation datasets...")
+    dir_manager.save_evaluation_datasets(evaluation_data, eval_config)
+    dir_manager.create_summary_files(evaluation_data)
 
-    if not metadata_path.exists():
-        raise FileNotFoundError(
-            f"Training metadata not found: {metadata_path}\n"
-            f"Please run training dataset generation first or provide --train-metadata-path"
-        )
+    # Log results
+    metadata = evaluation_data.get("metadata", {})
+    type_stats = metadata.get("type_statistics", {})
+    total_sequences = sum(type_stats.values())
 
-    return metadata_path
+    logger.info(f"  ✓ Successfully generated evaluation for L={L}, m={m}")
+    logger.info(f"    Total sequences: {total_sequences}")
+    logger.info(f"    Type distribution: {type_stats}")
+    logger.info(f"    Output: {dir_manager.eval_dir}")
 
-
-def create_evaluation_dataset_config(yaml_config: dict[str, t.Any], args) -> TransferConfig:
-    """Create TransferConfig from YAML configuration and arguments."""
-    eval_params = yaml_config["evaluation_params"]
-    transfer_config = yaml_config["transfer_config"]
-    icl_params = yaml_config["icl_params"]
-
-    return TransferConfig(
-        train_config_idx=args.train_config_idx,
-        num_rules_per_config=eval_params["num_rules_per_config"],
-        sequences_per_rule=eval_params["sequences_per_rule"],
-        context_sizes=icl_params["context_sizes"],
-        max_depth=transfer_config["max_depth"],
-        max_multiplicity=transfer_config["max_multiplicity"],
-        depth_steps=transfer_config.get("depth_steps", [1, 2]),
-        synonym_steps=transfer_config.get("synonym_steps", [1, 2]),
-        full_transfer_limit=transfer_config.get("full_transfer_limit", 10),
-        control_types=icl_params.get("control_types", ["normal", "shuffled_context", "random_context"]),
-        include_controls=eval_params.get("include_controls", True),
-        save_intermediate=eval_params.get("save_intermediate", True),
-        base_seed=eval_params.get("base_seed", 42),
-    )
-
-
-def generate_transfer_configurations(config: TransferConfig, train_config: tuple[int, int]) -> list[tuple[int, int]]:
-    """Generate test configurations for transfer evaluation."""
-    train_L, train_m = train_config
-    test_configs = []
-
-    # Depth transfer configurations (increase L, keep m same)
-    for step in config.depth_steps:
-        if train_L + step <= config.max_depth:
-            test_configs.append((train_L + step, train_m))
-
-    # Synonym transfer configurations (keep L same, increase m)
-    for step in config.synonym_steps:
-        if train_m + step <= config.max_multiplicity:
-            test_configs.append((train_L, train_m + step))
-
-    # Full transfer configurations (increase both L and m)
-    for L_step in config.depth_steps[:2]:  # Limit full transfer
-        for m_step in config.synonym_steps[:2]:
-            new_L, new_m = train_L + L_step, train_m + m_step
-            if new_L <= config.max_depth and new_m <= config.max_multiplicity:
-                test_configs.append((new_L, new_m))
-
-    # Remove duplicates and limit total configurations
-    test_configs = list(set(test_configs))
-    test_configs = test_configs[: config.full_transfer_limit]
-
-    return test_configs
-
-
-def save_evaluation_dataset(
-    dataset_dict: dict[str, t.Any], metadata: dict[str, t.Any], dataset_config: DatasetConfig, args
-) -> None:
-    """Save evaluation dataset in HuggingFace format with metadata to eval subdirectory."""
-    paths = dataset_config.get_dataset_paths()
-    dataset_dir = paths["dataset_dir"]  # This now points to the eval subdirectory
-
-    # Create output directory
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-
-    # Check for existing data
-    if (dataset_dir / "dataset").exists() and not args.overwrite:
-        if args.resume:
-            logger.info(f"Evaluation dataset already exists at {dataset_dir}, skipping generation")
-            return
-        raise FileExistsError(
-            f"Evaluation dataset already exists at {dataset_dir}. Use --overwrite to replace or --resume to skip."
-        )
-
-    # Create HuggingFace Dataset
-    logger.info("Creating HuggingFace Dataset...")
-    dataset = Dataset.from_dict(dataset_dict)
-
-    # Save HuggingFace dataset
-    dataset.save_to_disk(str(dataset_dir / "dataset"))
-    logger.info(f"✓ Saved HuggingFace evaluation dataset to {dataset_dir / 'dataset'}")
-
-    # Save metadata
-    with (dataset_dir / "metadata.pkl").open("wb") as f:
-        pickle.dump(metadata, f)
-    logger.info(f"✓ Saved metadata to {dataset_dir / 'metadata.pkl'}")
-
-    # Save human-readable summary
-    with (dataset_dir / "dataset_summary.txt").open("w") as f:
-        f.write(f"EVALUATION DATASET: {dataset_config.to_name()}\n")
-        f.write("=" * 60 + "\n\n")
-        f.write("Experiment Parameters:\n")
-        f.write(f"  Dataset Type: {dataset_config.dataset_type}\n")
-        f.write(f"  Mixture Type: {dataset_config.mixture_type}\n")
-        f.write(f"  Total Rules: {dataset_config.total_rules}\n")
-        f.write(f"  Seed: {dataset_config.seed}\n")
-        f.write(f"  Is Eval: {dataset_config.is_eval}\n\n")
-
-        f.write("Directory Structure:\n")
-        f.write(f"  Base directory: {paths['base_dir']}\n")
-        f.write(f"  Eval directory: {dataset_dir}\n")
-        f.write(f"  Config directory: {paths['config_dir']}\n\n")
-
-        f.write("Evaluation Statistics:\n")
-        f.write(f"  Total sequences: {metadata['dataset_stats']['total_sequences']:,}\n")
-        f.write(f"  Transfer conditions: {len(metadata['transfer_conditions'])}\n")
-        f.write(f"  Context sizes: {metadata['icl_params']['context_sizes']}\n")
-        f.write(f"  Control types: {len(metadata['icl_params']['control_types'])}\n\n")
-
-        f.write("Transfer Conditions:\n")
-        for condition, stats in metadata["condition_stats"].items():
-            f.write(f"  {condition}: {stats['total_sequences']} sequences\n")
-            if "configs" in stats:
-                f.write(f"    Configurations: {stats['configs']}\n")
-
-    logger.info(f"✓ Saved summary to {dataset_dir / 'dataset_summary.txt'}")
+    return True
 
 
 def main():
-    """Main evaluation dataset generation function."""
-    parser = create_evaluation_parser()
+    """Main ICL evaluation generation function."""
+    parser = create_icl_eval_parser()
     args = parser.parse_args()
 
-    # Ensure --eval flag was provided for evaluation dataset generation
-    if not args.eval:
-        logger.error("--eval flag is required for evaluation dataset generation")
-        return 1
+    # Validate arguments
+    validate_args(args)
 
     # Convert to dataset config
     dataset_config = parse_dataset_config(args)
-    paths = dataset_config.get_dataset_paths()
 
-    # Auto-detect training metadata if not provided
-    if args.train_metadata_path:
-        train_metadata_path = Path(args.train_metadata_path)
-    else:
-        train_metadata_path = auto_detect_training_metadata(dataset_config)
-
-    # Load evaluation configuration from experiment-specific YAML
+    # Discover available configurations
     try:
-        yaml_config = load_yaml_config(dataset_config)
+        configurations = discover_available_configurations(dataset_config)
     except FileNotFoundError as e:
-        logger.error(str(e))
-        logger.error("Please ensure eval_dataset.yaml exists in the experiment configuration directory.")
+        logger.error(f"Error: {e}")
         return 1
 
-    # Create evaluation configuration
-    eval_config = create_evaluation_dataset_config(yaml_config, args)
-
     if args.validate_only:
-        logger.info(f"Configuration validation successful for {dataset_config.to_name()}")
-        logger.info(f"Training metadata: {train_metadata_path}")
-        logger.info(f"Evaluation config: {eval_config}")
-        logger.info(f"Output directory: {paths['dataset_dir']}")
+        logger.info(f"Validation successful for {dataset_config.to_name()}")
+        logger.info(f"Found {len(configurations)} configurations with train/validation splits:")
+
+        for L, m in configurations:
+            logger.info(f"  L={L}, m={m}")
+
+            # Check prerequisites for each
+            paths = dataset_config.get_config_paths(L, m)
+            base_dir = paths["dataset_dir"].parent
+            prereq_results = check_evaluation_prerequisites(base_dir)
+
+            if prereq_results["ready_for_evaluation"]:
+                logger.info("    ✓ Ready for evaluation")
+            else:
+                missing = [k for k, v in prereq_results.items() if not v and k.endswith("_exists")]
+                logger.info(f"    ✗ Missing: {missing}")
+
         return 0
 
     if args.verbose:
-        logger.info(f"Evaluation dataset: {dataset_config.to_name()}")
-        logger.info(f"Base directory: {paths['base_dir']}")
-        logger.info(f"Eval directory: {paths['dataset_dir']}")
-        logger.info(f"Config directory: {paths['config_dir']}")
-        logger.info(f"Training metadata: {train_metadata_path}")
-
-    # Initialize generator
-    logger.info("Initializing TransferEvaluationGenerator...")
-    try:
-        generator = TransferEvaluationGenerator(
-            train_metadata_path=train_metadata_path, dataset_config=dataset_config, base_seed=eval_config.base_seed
-        )
-
-        # Generate evaluation dataset
-        dataset_dict, metadata = generator.generate_complete_evaluation_dataset(
-            config=eval_config, output_dir=paths["dataset_dir"]
-        )
-
-        # Save dataset
-        save_evaluation_dataset(dataset_dict, metadata, dataset_config, args)
-
-        logger.info(f"\n{'=' * 60}")
-        logger.info("EVALUATION DATASET GENERATION COMPLETE")
-        logger.info(f"{'=' * 60}")
         logger.info(f"Dataset: {dataset_config.to_name()}")
-        logger.info(f"Total sequences: {len(dataset_dict['input_ids']):,}")
-        logger.info(f"Output directory: {paths['dataset_dir']}")
-        logger.info(f"Base directory: {paths['base_dir']}")
-        logger.info(f"{'=' * 60}")
+        logger.info(f"Configurations to process: {configurations}")
+        if args.enable_types:
+            logger.info(f"Enabled types override: {args.enable_types}")
+        logger.info(f"Skip existing: {args.skip_existing}")
+        logger.info(f"Overwrite: {args.overwrite}")
 
-        return 0
+    # Process each configuration
+    total_configs = len(configurations)
+    successful_configs = 0
+    failed_configs = []
 
-    except Exception as e:
-        logger.error(f"Error during evaluation dataset generation: {e}")
-        if args.verbose:
-            import traceback
+    logger.info(f"\n{'=' * 60}")
+    logger.info("STARTING ICL EVALUATION GENERATION")
+    logger.info(f"{'=' * 60}")
 
-            traceback.print_exc()
-        return 1
+    for config_idx, (L, m) in enumerate(configurations, 1):
+        logger.info(f"\nProcessing configuration {config_idx}/{total_configs}: L={L}, m={m}")
+        logger.info("-" * 40)
+
+        try:
+            success = generate_evaluation_for_configuration(
+                L,
+                m,
+                dataset_config,
+                enable_types=args.enable_types,
+                skip_existing=args.skip_existing,
+                overwrite=args.overwrite,
+            )
+
+            if success:
+                successful_configs += 1
+            else:
+                failed_configs.append((L, m, "Generation failed"))
+
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user")
+            break
+        except Exception as e:
+            logger.error(f"Unexpected error for L={L}, m={m}: {e}")
+            failed_configs.append((L, m, str(e)))
+            if args.verbose:
+                import traceback
+
+                traceback.print_exc()
+            continue
+
+    # Final summary
+    logger.info(f"\n{'=' * 60}")
+    logger.info("ICL EVALUATION GENERATION COMPLETE")
+
+    return 0 if successful_configs > 0 else 1
 
 
 if __name__ == "__main__":
