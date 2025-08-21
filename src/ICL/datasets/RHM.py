@@ -61,8 +61,30 @@ def sample_data_from_labels(labels, rules, probability):
             start_dim=1
         )  # Apply the chosen rule to each variable in the current level
 
+
+    features, labels = remove_duplicate_features_both_tensors(features, labels)
     return features, labels
 
+
+
+def remove_duplicate_features_both_tensors(features, parallel_list):
+    """
+    Remove duplicate rows from features tensor and corresponding rows from parallel tensor
+    """
+    # Find unique rows in features tensor
+    unique_features, inverse_indices = torch.unique(
+        features, 
+        dim=0, 
+        return_inverse=True
+    )
+    
+    # Get indices of first occurrence for each unique row
+    first_occurrence_indices = torch.unique(inverse_indices, return_inverse=True)[1]
+    
+    # Filter both tensors using the first occurrence indices
+    unique_parallel = parallel_list[first_occurrence_indices]
+    
+    return unique_features, unique_parallel
 
 def sample_data_from_labels_unif(labels, rules, bonus):
     """Create data of the Random Hierarchy Model starting from class labels and a set of rules. Rules are chosen uniformly at random for each level.
@@ -139,7 +161,7 @@ def sample_data_from_labels_unif(labels, rules, bonus):
                 )  # ... and randomly change the next-to-last feature
                 # TODO: rules[l].shape[0] not v in general!!! FIX IT!
                 # TODO: add custom positions for 'noise'
-
+    features, labels = remove_duplicate_features_both_tensors(features, labels)
     return features, labels
 
 
@@ -315,10 +337,8 @@ class RandomHierarchyModel(Dataset):
         else:
             # TODO: implement synonymic and noisy data for sampling with replacement
             torch.manual_seed(seed_sample)
-            if train_size == -1:
-                labels = torch.randint(low=0, high=num_classes, size=(max_data + test_size,))
-            else:
-                labels = torch.randint(low=0, high=num_classes, size=(train_size + test_size,))
+            assert train_size > -1, "For sampling with replacement, train_size must be greater than 0."
+            labels = torch.randint(low=0, high=num_classes, size=(train_size + test_size,))
             if probability is None:
                 self.features, self.labels = sample_data_from_labels_unif(labels, self.rules, bonus)
             else:  # TODO: implement synonymic and noisy data for arbitrary distribution

@@ -3,19 +3,19 @@ rhm_params:
   vocab_size: 32
   num_classes: 2
   tuple_size: 2
-  samples_per_config: -1
+  samples_per_config: 1000
 
 configurations:
   - L: 4
     m: 2
-  # - L: 3
-  #   m: 2
-  # - L: 2
-  #   m: 4
-  # - L: 4
-  #   m: 2
-  # - L: 3
-  #   m: 3
+  - L: 3
+    m: 2
+  - L: 2
+    m: 4
+  - L: 4
+    m: 2
+  - L: 3
+    m: 3
 
 ######### replacement = False by default, if want to use "zipfian" distribution, set replacement to True in hardcored code.
 distribution:
