@@ -189,6 +189,34 @@ class DatasetConfig:
         """Create DatasetConfig with explicit L,M values."""
         return cls(dataset_type=dataset_type, seed=seed, num_seeds=num_seeds, L=L, m=m, is_eval=is_eval)
 
+    def get_base_paths(self) -> dict[str, Path]:
+        """Generate base dataset paths (without L,M specification)."""
+        return {
+            "base_dataset_dir": PATH.dataset_root,
+            # Note: config_dir is per (L,M) configuration, not shared
+        }
+
+    def get_config_paths(self, L: int, m: int) -> dict[str, Path]:
+        """Generate dataset-specific paths for a given (L,M) configuration."""
+        subdir = get_dataset_subdir(self.is_eval)
+
+        # Main directory name includes dataset_type, num_seeds, L, and M
+        config_dir_name = f"{self.dataset_type}_{self.num_seeds}_L{L}_M{m}"
+
+        # Config directory follows same pattern
+        config_yaml_dir = f"{self.dataset_type}_{self.num_seeds}_L{L}_M{m}"
+
+        return {
+            "dataset_dir": PATH.dataset_root / config_dir_name / subdir,
+            "config_base_dir": PATH.dataset_root / config_dir_name,
+            "config_dir": PATH.conf_dir / config_yaml_dir,
+            "base_dataset_dir": PATH.dataset_root / config_dir_name,
+        }
+
+    def get_all_config_dirs(self, L_M_pairs: list[tuple[int, int]]) -> dict[tuple[int, int], dict[str, Path]]:
+        """Generate paths for all (L,M) configurations."""
+        return {(L, m): self.get_config_paths(L, m) for L, m in L_M_pairs}
+
 
 @dataclass(frozen=True)
 class ModelConfig:
