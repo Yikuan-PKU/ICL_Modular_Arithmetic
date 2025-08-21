@@ -364,12 +364,12 @@ def discover_configurations(dataset_config: DatasetConfig) -> list[tuple[int, in
                     L, m = int(match.group(1)), int(match.group(2))
 
                     # Check if train_dataset.yaml exists in this directory
-                    yaml_file = config_dir / "train_dataset.yaml"
+                    yaml_file = config_dir / "generate_raw.yaml"
                     if yaml_file.exists():
                         configurations.append((L, m))
                         logger.info(f"Found configuration: L={L}, m={m} at {config_dir}")
                         break  # Stop checking other patterns for this directory
-                    logger.warning(f"Config directory {config_dir} missing train_dataset.yaml")
+                    logger.warning(f"Config directory {config_dir} missing generate_raw.yaml")
 
     if not configurations:
         logger.error("No valid configurations found. Searched patterns:")
@@ -392,7 +392,7 @@ def discover_configurations(dataset_config: DatasetConfig) -> list[tuple[int, in
 def load_config_for_LM(dataset_config: DatasetConfig, L: int, m: int) -> dict[str, Any]:
     """Load YAML configuration for a specific (L,M) pair."""
     paths = dataset_config.get_config_paths(L, m)
-    config_path = paths["config_dir"] / "train_dataset.yaml"
+    config_path = paths["config_dir"] / "generate_raw.yaml"
 
     try:
         return load_yaml_config(config_path)
@@ -418,7 +418,7 @@ def main():
         logger.error(f"Error: {e}")
         logger.error("Please ensure the YAML configurations exist before running dataset generation.")
         logger.error(
-            f"Expected pattern: conf/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/train_dataset.yaml"
+            f"Expected pattern: conf/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/generate_raw.yaml"
         )
         return 1
 
@@ -446,7 +446,7 @@ def main():
     if args.verbose:
         logger.info(f"Dataset: {dataset_config.to_name()}")
         logger.info(
-            f"Output pattern: datasets/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/train/seed_{{seed}}/dataset/"
+            f"Output pattern: datasets/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/raw/seed_{{seed}}/dataset/"
         )
 
     # Generate datasets for each discovered (L,M) configuration

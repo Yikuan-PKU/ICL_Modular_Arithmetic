@@ -125,7 +125,7 @@ def load_experiment_config(config_type: str, dataset_config: "DatasetConfig", L:
 
 def get_dataset_subdir(is_eval: bool) -> str:
     """Get dataset subdirectory name based on dataset type."""
-    return "eval" if is_eval else "train"
+    return "eval" if is_eval else "raw"
 
 
 #################################
