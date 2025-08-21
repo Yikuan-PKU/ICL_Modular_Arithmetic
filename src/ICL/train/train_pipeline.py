@@ -443,7 +443,7 @@ def create_rhm_training_pipeline(
     # Get paths from model config
     paths = model_config.get_model_paths()
     dataset_path = paths["dataset_dir"]
-    output_dir = paths["model_dir"]
+    output_dir = paths["model_dir"]  # This is models/uniform_10_L4_M2
 
     # Validate dataset structure and extract L,M
     logger.info(f"Validating dataset structure at: {dataset_path}")
@@ -461,7 +461,8 @@ def create_rhm_training_pipeline(
 
     # Update training config output directory and model naming
     model_suffix = training_config.get_model_suffix()
-    enhanced_output_dir = output_dir.parent / f"{output_dir.name}_{model_suffix}"
+    # FIXED: Create subdirectory instead of appending to parent name
+    enhanced_output_dir = output_dir / model_suffix  # Creates: models/uniform_10_L4_M2/clm_noshuffle_seedbalanced
     training_config.output_dir = str(enhanced_output_dir)
 
     logger.info(f"Dataset path: {dataset_path}")
@@ -531,7 +532,6 @@ def create_rhm_training_pipeline(
         callbacks=callbacks,
     )
 
-    # Enhanced metadata with seed and hierarchical info
     enhanced_metadata = {
         "model_config": {
             "dataset_name": model_config.dataset_config.to_name(),
@@ -546,7 +546,7 @@ def create_rhm_training_pipeline(
             "discovered_m": m,
         },
         "seed_dataset_metadata": metadata,
-        "dataset_validation": validation,  # Include validation results
+        "dataset_validation": validation,
         "training_metadata": {
             "total_train_samples": total_train_samples,
             "total_eval_samples": total_eval_samples,

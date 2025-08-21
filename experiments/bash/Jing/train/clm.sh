@@ -22,17 +22,6 @@ SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $
 # Optional pipeline controls
 PIPELINE_ARGS="--verbose"
 
-echo "=========================================="
-echo "TRAINING MODEL"
-echo "=========================================="
-echo "Dataset: $DATASET_NAME"
-echo "Model: $MODEL_NAME"
-echo "Seed: $SEED"
-echo "Number of seeds: $NUM_SEEDS"
-echo "GPU allocation: $SLURM_GPUS_ON_NODE"
-echo "Memory: $SLURM_MEM_PER_NODE MB"
-echo "=========================================="
-
 # Step 1: Validate configuration (optional)
 echo "Step 1: Validating training configuration..."
 python $SCRIPT_ROOT/train.py $SHARED_ARGS --dry-run

@@ -325,10 +325,10 @@ def main():
     logger.info(f"Learning rate: {training_config.learning_rate}")
     logger.info(f"Epochs: {training_config.num_train_epochs}")
     logger.info(f"Dataset path: {paths['dataset_dir']}")
-    logger.info(f"Model output: {paths['model_dir']}")
+    logger.info(f"Base model path: {paths['model_dir']}")  # Updated log message
+    logger.info(f"Enhanced model path: {training_config.output_dir}")  # Add this line
     logger.info(f"Config path: {paths['config_dir']}")
     logger.info("=" * 60)
-
     # Create model based on configuration
     logger.info("Creating model...")
     if training_config.model_name_or_path:
