@@ -4,6 +4,7 @@ import logging
 import random
 import typing as t
 from collections import defaultdict
+from pathlib import Path
 
 import torch
 from datasets import Dataset
@@ -17,7 +18,11 @@ from transformers import (
 
 from ICL.settings import ModelConfig
 from ICL.train.model import RHMTrainingConfig
-from ICL.train.seed_dataset_loading import prepare_seed_based_dataset, validate_dataset_structure
+from ICL.train.seed_dataset_loading import (
+    analyze_batching_strategy,
+    prepare_seed_based_dataset,
+    validate_dataset_structure,
+)
 from ICL.train.tokenizer import RHMTokenizer
 
 # Set up logging
@@ -57,19 +62,9 @@ class RHMTrainer(Trainer):
 
         # We'll create combined datasets for the parent Trainer
         # The actual seed-aware batching is handled by our custom dataloader
-        if train_seed_datasets:
-            from train_pipeline import CombinedSeedDataset
+        train_dataset = CombinedSeedDataset(train_seed_datasets) if train_seed_datasets else None
 
-            train_dataset = CombinedSeedDataset(train_seed_datasets)
-        else:
-            train_dataset = None
-
-        if eval_seed_datasets:
-            from train_pipeline import CombinedSeedDataset
-
-            eval_dataset = CombinedSeedDataset(eval_seed_datasets)
-        else:
-            eval_dataset = None
+        eval_dataset = CombinedSeedDataset(eval_seed_datasets) if eval_seed_datasets else None
 
         # Initialize parent without data_collator - we'll override get_train_dataloader
         super().__init__(
@@ -93,8 +88,6 @@ class RHMTrainer(Trainer):
 
         logger.info("Creating seed-aware training dataloader...")
 
-        #! from train_pipeline import create_seed_aware_dataloader
-
         dataloader = create_seed_aware_dataloader(
             seed_datasets=self.train_seed_datasets,
             config=self.rhm_config,
@@ -110,8 +103,6 @@ class RHMTrainer(Trainer):
             return None
 
         logger.info("Creating seed-aware evaluation dataloader...")
-
-        from train_pipeline import create_seed_aware_dataloader
 
         dataloader = create_seed_aware_dataloader(
             seed_datasets=self.eval_seed_datasets,
@@ -249,7 +240,6 @@ class RHMTrainer(Trainer):
 
         # Save seed metrics
         seed_metrics_file = output_path / "seed_training_metrics.json"
-        import json
 
         seed_metrics_data = {
             "seed_metrics": dict(self.seed_metrics),
@@ -270,16 +260,11 @@ class RHMTrainer(Trainer):
             "available_seeds": list(self.train_seed_datasets.keys()),
         }
 
-        with seed_metrics_file.open("w") as f:
-            json.dump(seed_metrics_data, f, indent=2)
-
-        logger.info(f"Saved seed training metrics to: {seed_metrics_file}")
-
 
 class SeedMetricsCallback(TrainerCallback):
     """Callback for enhanced seed-specific metrics tracking."""
 
-    def __init__(self, config: "RHMTrainingConfig", tokenizer: RHMTokenizer):
+    def __init__(self, config: RHMTrainingConfig, tokenizer: RHMTokenizer):
         """Initialize seed metrics callback."""
         self.config = config
         self.tokenizer = tokenizer
@@ -335,6 +320,57 @@ class SeedMetricsCallback(TrainerCallback):
         logger.info("=== TRAINING COMPLETE ===")
         logger.info(f"Total epochs completed: {self.epoch_count}")
         logger.info(f"Final model saved to: {args.output_dir}")
+
+
+class HierarchicalMetricsCallback(TrainerCallback):
+    """Callback for computing hierarchical-specific metrics during training."""
+
+    def __init__(self, eval_dataset: Dataset, config: RHMTrainingConfig, tokenizer: RHMTokenizer):
+        """Initialize metrics callback."""
+        self.eval_dataset = eval_dataset
+        self.config = config
+        self.tokenizer = tokenizer
+        self.step_count = 0
+
+    def on_evaluate(self, args, state, control, model, logs=None, **kwargs):
+        """Compute additional metrics during evaluation."""
+        if logs is None:
+            return
+
+        self.step_count += 1
+
+        # Add hierarchical evaluation metrics
+        logs["hierarchical_eval_count"] = self.step_count
+
+        # Example: Track special token usage
+        if hasattr(model, "get_input_embeddings"):
+            embeddings = model.get_input_embeddings()
+            special_token_norms = {}
+
+            special_tokens = {
+                "pad": self.tokenizer.pad_token_id,
+                "eos": self.tokenizer.eos_token_id,
+                "sep": self.tokenizer.sep_token_id,
+                "mask": self.tokenizer.mask_token_id,
+            }
+
+            for token_name, token_id in special_tokens.items():
+                if token_id < embeddings.num_embeddings:
+                    norm = torch.norm(embeddings.weight[token_id]).item()
+                    logs[f"special_token_{token_name}_norm"] = norm
+
+        logger.info(f"Hierarchical evaluation #{self.step_count} completed")
+        logger.info(f"Current eval loss: {logs.get('eval_loss', 'N/A'):.4f}")
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Log tokenizer information at training start."""
+        logger.info(f"Training with RHM tokenizer (vocab_size: {self.tokenizer.vocab_size})")
+        logger.info(
+            f"Special tokens - PAD: {self.tokenizer.pad_token_id}, "
+            f"EOS: {self.tokenizer.eos_token_id}, "
+            f"SEP: {self.tokenizer.sep_token_id}, "
+            f"MASK: {self.tokenizer.mask_token_id}"
+        )
 
 
 class HierarchicalMetricsCallback(TrainerCallback):
@@ -400,19 +436,8 @@ def create_rhm_training_pipeline(
     model,
     training_config: RHMTrainingConfig,
     **dataset_kwargs,
-) -> tuple["RHMTrainer", dict[str, t.Any]]:
-    """Create complete RHM training pipeline with proper config loading and seed-aware batching.
-
-    Args:
-        model_config: ModelConfig for hierarchical path management
-        model: Model to train
-        training_config: Training configuration
-        **dataset_kwargs: Additional arguments for dataset preparation
-
-    Returns:
-        Tuple of (trainer, metadata)
-
-    """
+) -> tuple[RHMTrainer, dict[str, t.Any]]:
+    """Create complete RHM training pipeline with proper config loading and seed-aware batching."""
     logger.info("Creating RHM training pipeline with seed-aware batching...")
 
     # Get paths from model config
@@ -570,7 +595,7 @@ def create_rhm_training_pipeline(
             "num_parameters": sum(p.numel() for p in model.parameters()),
         },
         "dataset_generation_params": metadata.get("dataset_metadata", {}),
-        "batching_analysis": _analyze_batching_strategy(train_seed_datasets, training_config),
+        "batching_analysis": analyze_batching_strategy(train_seed_datasets, training_config),
     }
 
     logger.info("Training pipeline created successfully!")
@@ -584,81 +609,6 @@ def create_rhm_training_pipeline(
 
 
 ##########################################
-
-
-class SeedAwareDataCollator(DataCollatorForLanguageModeling):
-    """Data collator that handles seed-based batching while preserving packed sequence integrity."""
-
-    def __init__(
-        self,
-        tokenizer: RHMTokenizer,
-        mlm: bool = True,
-        mlm_probability: float = 0.15,
-        return_tensors: str = "pt",
-        seed_balanced_batching: bool = True,
-        seed_sampling_strategy: str = "balanced",
-    ):
-        """Initialize seed-aware data collator.
-
-        Args:
-            tokenizer: RHM tokenizer instance
-            mlm: Whether to use masked language modeling
-            mlm_probability: Probability of masking tokens
-            return_tensors: Format of returned tensors
-            seed_balanced_batching: Whether to balance seeds in batches
-            seed_sampling_strategy: Strategy for seed sampling
-
-        """
-        super().__init__(
-            tokenizer=tokenizer,
-            mlm=mlm,
-            mlm_probability=mlm_probability,
-            return_tensors=return_tensors,
-        )
-        self.rhm_tokenizer = tokenizer
-        self.seed_balanced_batching = seed_balanced_batching
-        self.seed_sampling_strategy = seed_sampling_strategy
-
-    def torch_call(self, examples: list[dict[str, t.Any]]) -> dict[str, torch.Tensor]:
-        """Process batch with seed-aware handling and RHM-specific token masking."""
-        # Log seed composition of the batch
-        if "seed" in examples[0]:
-            seed_counts = defaultdict(int)
-            for example in examples:
-                seed_counts[example["seed"]] += 1
-
-            logger.debug(f"Batch seed composition: {dict(seed_counts)}")
-
-        # Convert to format expected by parent class
-        batch = []
-        for example in examples:
-            if isinstance(example["input_ids"], list):
-                batch.append({"input_ids": torch.tensor(example["input_ids"])})
-            else:
-                batch.append({"input_ids": example["input_ids"]})
-
-        # Use parent's processing for padding and masking
-        result = super().torch_call(batch)
-
-        # Apply RHM-specific masking rules
-        if self.mlm and "labels" in result:
-            # Never mask special tokens
-            special_token_ids = {
-                self.rhm_tokenizer.pad_token_id,
-                self.rhm_tokenizer.eos_token_id,
-                self.rhm_tokenizer.sep_token_id,
-                self.rhm_tokenizer.unk_token_id,
-            }
-
-            for special_token_id in special_token_ids:
-                special_mask = result["input_ids"] == special_token_id
-                result["labels"][special_mask] = -100  # Don't compute loss on special tokens
-
-        # Add seed information to the batch if available
-        if "seed" in examples[0]:
-            result["seeds"] = torch.tensor([example["seed"] for example in examples])
-
-        return result
 
 
 class SeedBalancedSampler(Sampler):
@@ -798,7 +748,7 @@ class SeedBalancedSampler(Sampler):
         return self.total_size
 
 
-class CombinedSeedDataset(Dataset):
+class CombinedSeedDataset:
     """Dataset that combines multiple seed datasets while preserving seed information."""
 
     def __init__(self, seed_datasets: dict[int, Dataset]):
@@ -809,18 +759,23 @@ class CombinedSeedDataset(Dataset):
 
         """
         self.seed_datasets = seed_datasets
-        self.seed_ranges = {}
-        self.total_size = 0
 
-        # Build index mapping
-        current_idx = 0
+        # Create a single combined dataset with seed information
+        all_items = []
         for seed, dataset in seed_datasets.items():
-            start_idx = current_idx
-            end_idx = current_idx + len(dataset)
-            self.seed_ranges[seed] = (start_idx, end_idx)
-            current_idx = end_idx
+            for item in dataset:
+                # Add seed information to each item
+                if isinstance(item, dict):
+                    item_with_seed = item.copy()
+                    item_with_seed["seed"] = seed
+                else:
+                    item_with_seed = {"data": item, "seed": seed}
+                all_items.append(item_with_seed)
 
-        self.total_size = current_idx
+        # Create HuggingFace Dataset from the combined items
+        self.combined_dataset = Dataset.from_list(all_items)
+        self.total_size = len(self.combined_dataset)
+
         logger.info(f"CombinedSeedDataset: {self.total_size} total samples from {len(seed_datasets)} seeds")
 
     def __len__(self):
@@ -828,50 +783,223 @@ class CombinedSeedDataset(Dataset):
         return self.total_size
 
     def __getitem__(self, idx):
-        """Get item by global index."""
-        # Find which seed this index belongs to
-        for seed, (start_idx, end_idx) in self.seed_ranges.items():
-            if start_idx <= idx < end_idx:
-                local_idx = idx - start_idx
-                item = self.seed_datasets[seed][local_idx]
-
-                # Add seed information to the item
-                if isinstance(item, dict):
-                    item = item.copy()
-                    item["seed"] = seed
-                else:
-                    # Handle non-dict items (shouldn't happen with our datasets)
-                    item = {"data": item, "seed": seed}
-
-                return item
-
-        raise IndexError(f"Index {idx} out of range for combined dataset of size {self.total_size}")
+        """Get item by global index - delegates to HuggingFace Dataset."""
+        return self.combined_dataset[idx]
 
     def select(self, indices):
         """Select subset of items by indices."""
-        # Create a new dataset with selected items
-        selected_items = [self[i] for i in indices]
-        return Dataset.from_list(selected_items)
+        return self.combined_dataset.select(indices)
+
+    @property
+    def column_names(self):
+        """Get column names from the underlying dataset."""
+        return self.combined_dataset.column_names
+
+    @property
+    def features(self):
+        """Get features from the underlying dataset."""
+        return self.combined_dataset.features
+
+
+class SeedAwareDataCollator(DataCollatorForLanguageModeling):
+    """Data collator that handles seed-based batching while preserving packed sequence integrity."""
+
+    def __init__(
+        self,
+        tokenizer: RHMTokenizer,
+        mlm: bool = True,
+        mlm_probability: float = 0.15,
+        return_tensors: str = "pt",
+        seed_balanced_batching: bool = True,
+        seed_sampling_strategy: str = "balanced",
+    ):
+        """Initialize seed-aware data collator."""
+        super().__init__(
+            tokenizer=tokenizer,
+            mlm=mlm,
+            mlm_probability=mlm_probability,
+            return_tensors=return_tensors,
+        )
+        self.rhm_tokenizer = tokenizer
+        self.seed_balanced_batching = seed_balanced_batching
+        self.seed_sampling_strategy = seed_sampling_strategy
+
+    def torch_call(self, examples: list[dict[str, t.Any]]) -> dict[str, torch.Tensor]:
+        """Process batch with seed-aware handling and RHM-specific token masking."""
+        # Log seed composition of the batch
+        if "seed" in examples[0]:
+            seed_counts = defaultdict(int)
+            for example in examples:
+                seed_counts[example["seed"]] += 1
+
+            logger.debug(f"Batch seed composition: {dict(seed_counts)}")
+
+        # Convert to format expected by parent class
+        batch = []
+        for example in examples:
+            if isinstance(example["input_ids"], list):
+                batch.append({"input_ids": torch.tensor(example["input_ids"])})
+            else:
+                batch.append({"input_ids": example["input_ids"]})
+
+        # Use parent's processing for padding and masking
+        result = super().torch_call(batch)
+
+        # Apply RHM-specific masking rules
+        if self.mlm and "labels" in result:
+            # Never mask special tokens
+            special_token_ids = {
+                self.rhm_tokenizer.pad_token_id,
+                self.rhm_tokenizer.eos_token_id,
+                self.rhm_tokenizer.sep_token_id,
+                self.rhm_tokenizer.unk_token_id,
+            }
+
+            for special_token_id in special_token_ids:
+                special_mask = result["input_ids"] == special_token_id
+                result["labels"][special_mask] = -100  # Don't compute loss on special tokens
+
+        # Add seed information to the batch if available
+        if "seed" in examples[0]:
+            result["seeds"] = torch.tensor([example["seed"] for example in examples])
+
+        return result
+
+
+class SeedBalancedSampler(Sampler):
+    """Sampler that ensures balanced representation of seeds within each batch."""
+
+    def __init__(
+        self,
+        seed_datasets: dict[int, Dataset],
+        batch_size: int,
+        seed_sampling_strategy: str = "balanced",
+        seeds_per_batch: int | None = None,
+        shuffle: bool = True,
+        generator: torch.Generator | None = None,
+    ):
+        """Initialize seed-balanced sampler."""
+        self.seed_datasets = seed_datasets
+        self.batch_size = batch_size
+        self.seed_sampling_strategy = seed_sampling_strategy
+        self.seeds_per_batch = seeds_per_batch or len(seed_datasets)
+        self.shuffle = shuffle
+        self.generator = generator
+
+        # Validate parameters
+        if self.seeds_per_batch > len(seed_datasets):
+            self.seeds_per_batch = len(seed_datasets)
+            logger.warning(f"seeds_per_batch reduced to {self.seeds_per_batch} (available seeds)")
+
+        if batch_size % self.seeds_per_batch != 0:
+            logger.warning(
+                f"batch_size ({batch_size}) not divisible by seeds_per_batch ({self.seeds_per_batch}). "
+                f"Some batches may have uneven seed distribution."
+            )
+
+        # Create global index mapping
+        self.global_indices = []
+        self.seed_ranges = {}
+        current_idx = 0
+
+        for seed, dataset in seed_datasets.items():
+            start_idx = current_idx
+            end_idx = current_idx + len(dataset)
+            self.seed_ranges[seed] = (start_idx, end_idx)
+
+            # Add indices with seed information
+            for local_idx in range(len(dataset)):
+                self.global_indices.append((seed, local_idx, current_idx))
+                current_idx += 1
+
+        self.total_size = len(self.global_indices)
+        logger.info(
+            f"SeedBalancedSampler initialized: {self.total_size} total samples across {len(seed_datasets)} seeds"
+        )
+
+    def __iter__(self):
+        """Generate indices for seed-balanced batching."""
+        available_seeds = list(self.seed_datasets.keys())
+
+        # Create per-seed iterators
+        seed_iterators = {}
+        for seed in available_seeds:
+            indices = list(range(len(self.seed_datasets[seed])))
+            if self.shuffle:
+                if self.generator is not None:
+                    generator_state = self.generator.get_state()
+                    torch.manual_seed(hash((seed, generator_state)) % (2**32))
+                random.shuffle(indices)
+            seed_iterators[seed] = iter(indices)
+
+        # Generate batches
+        samples_per_seed = self.batch_size // self.seeds_per_batch
+        remainder = self.batch_size % self.seeds_per_batch
+
+        batch = []
+        active_seeds = available_seeds.copy()
+
+        while active_seeds:
+            # Select seeds for this batch
+            if self.seed_sampling_strategy == "balanced":
+                # Use all available seeds in round-robin fashion
+                selected_seeds = active_seeds[: self.seeds_per_batch]
+            elif self.seed_sampling_strategy == "random":
+                # Randomly select seeds
+                if len(active_seeds) >= self.seeds_per_batch:
+                    selected_seeds = random.sample(active_seeds, self.seeds_per_batch)
+                else:
+                    selected_seeds = active_seeds
+            else:  # weighted or fallback
+                # For now, fallback to balanced
+                selected_seeds = active_seeds[: self.seeds_per_batch]
+
+            # Sample from each selected seed
+            batch_seeds_used = set()
+            for i, seed in enumerate(selected_seeds):
+                target_samples = samples_per_seed
+                if i < remainder:  # Distribute remainder
+                    target_samples += 1
+
+                samples_added = 0
+                try:
+                    for _ in range(target_samples):
+                        local_idx = next(seed_iterators[seed])
+                        global_idx = self.seed_ranges[seed][0] + local_idx
+                        batch.append(global_idx)
+                        samples_added += 1
+                        batch_seeds_used.add(seed)
+
+                except StopIteration:
+                    # This seed is exhausted
+                    if seed in active_seeds:
+                        active_seeds.remove(seed)
+                    logger.debug(f"Seed {seed} exhausted after contributing {samples_added} samples to current batch")
+
+            # Yield batch when full or when we can't fill it anymore
+            if len(batch) >= self.batch_size or not active_seeds:
+                if batch:
+                    logger.debug(f"Yielding batch of size {len(batch)} with seeds: {batch_seeds_used}")
+                    yield from batch
+                    batch = []
+
+        # Yield any remaining samples
+        if batch:
+            logger.debug(f"Yielding final batch of size {len(batch)}")
+            yield from batch
+
+    def __len__(self):
+        """Return total number of samples."""
+        return self.total_size
 
 
 def create_seed_aware_dataloader(
     seed_datasets: dict[int, Dataset],
-    config: "RHMTrainingConfig",
+    config: RHMTrainingConfig,
     tokenizer: RHMTokenizer,
     is_training: bool = True,
 ) -> DataLoader:
-    """Create a dataloader with seed-aware batching.
-
-    Args:
-        seed_datasets: Dict mapping seed -> Dataset
-        config: Training configuration
-        tokenizer: RHM tokenizer
-        is_training: Whether this is for training (affects shuffling)
-
-    Returns:
-        DataLoader with seed-aware batching
-
-    """
+    """Create a dataloader with seed-aware batching."""
     # Combine seed datasets
     combined_dataset = CombinedSeedDataset(seed_datasets)
 
@@ -886,7 +1014,6 @@ def create_seed_aware_dataloader(
 
     # Determine batch size
     batch_size = config.per_device_train_batch_size if is_training else config.per_device_eval_batch_size
-
     # Create sampler if seed-balanced batching is enabled
     sampler = None
     shuffle = False

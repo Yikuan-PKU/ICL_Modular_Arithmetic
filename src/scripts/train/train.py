@@ -2,7 +2,6 @@
 """RHM Model Training Main Script with Flattened Config Support"""
 
 import argparse
-import json
 import logging
 import re
 import typing as t
@@ -11,6 +10,7 @@ from pathlib import Path
 from transformers import set_seed
 
 from ICL.settings import (
+    DatasetConfig,
     ModelConfig,
     create_base_parser,
     load_experiment_config,
@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 def create_training_parser() -> argparse.ArgumentParser:
     """Create argument parser for training with flattened config support."""
-    parser = create_base_parser(require_model_type=True)
-    parser.description = "Train RHM models with flattened configuration"
+    parser = create_base_parser(require_model_type=True, allow_L_M_override=True)
+    parser.description = "Train RHM models with automatic L,M discovery"
 
     # Training-specific arguments
     training_group = parser.add_argument_group("Training Configuration")
@@ -40,24 +40,22 @@ def create_training_parser() -> argparse.ArgumentParser:
     training_group.add_argument(
         "--dry-run", action="store_true", help="Validate configuration without starting training"
     )
+    training_group.add_argument(
+        "--list-configs", action="store_true", help="List available L,M configurations and exit"
+    )
 
     return parser
 
 
 def load_model_yaml_config(model_config: ModelConfig) -> dict[str, t.Any]:
-    """Load model-specific YAML configuration from correct path structure."""
-    # Extract L,M from the dataset path
-    paths = model_config.get_model_paths()
-    dataset_path = paths["dataset_dir"]
+    """Load model-specific YAML configuration using discovered L,M values."""
+    # Now L,M are already available in the model_config
+    L = model_config.dataset_config.L
+    m = model_config.dataset_config.m
 
-    try:
-        L, m = extract_L_M_from_dataset_path(dataset_path)
-        logger.info(f"Extracted L={L}, m={m} from dataset path: {dataset_path}")
-    except ValueError as e:
-        logger.error(f"Failed to extract L,M from dataset path: {e}")
-        return {}
+    logger.info(f"Using dataset configuration: L={L}, m={m}")
 
-    # Load config using the correct L,M values
+    # Load config using the discovered L,M values
     config_type = model_config.model_type  # "clm" or "mlm"
     yaml_config = load_experiment_config(config_type, model_config.dataset_config, L=L, m=m)
 
@@ -227,14 +225,14 @@ def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.An
         "dataset_generation_params": training_metadata.get("dataset_generation_params", {}),
     }
 
-    with open(metadata_file, "w") as f:
-        json.dump(eval_metadata, f, indent=2)
+    # with open(metadata_file, "w") as f:
+    # json.dump(eval_metadata, f, indent=2)
 
-    logger.info(f"Saved evaluation metadata to: {metadata_file}")
+    # logger.info(f"Saved evaluation metadata to: {metadata_file}")
 
 
 def main():
-    """Train RHM model using flattened configuration system."""
+    """Train RHM model using automatic L,M discovery."""
     # Parse arguments
     parser = create_training_parser()
     args = parser.parse_args()
@@ -242,8 +240,44 @@ def main():
     # Validate arguments
     validate_args(args)
 
-    # Convert to model config (dataset_config.is_eval will be False by default)
+    # Convert to model config (L,M will be auto-discovered)
     model_config = parse_model_config(args)
+
+    # Validate that the dataset configuration exists
+    if not model_config.validate_config():
+        logger.error("Dataset configuration validation failed!")
+
+        # Show available configurations
+        available_configs = model_config.get_available_dataset_configs()
+        if available_configs:
+            logger.info("Available (L,M) configurations:")
+            for L, M in available_configs:
+                logger.info(f"  L={L}, M={M}")
+            logger.info("Use --L and --M arguments to specify a different configuration")
+        else:
+            logger.error(
+                f"No datasets found for {model_config.dataset_config.dataset_type}_{model_config.dataset_config.num_seeds}"
+            )
+
+        return None
+
+    # Handle list-configs option
+    if args.list_configs:
+        available_configs = model_config.get_available_dataset_configs()
+        print(
+            f"Available configurations for {model_config.dataset_config.dataset_type}_{model_config.dataset_config.num_seeds}:"
+        )
+        for L, M in available_configs:
+            dataset_config = DatasetConfig.create_with_L_M(
+                model_config.dataset_config.dataset_type,
+                model_config.dataset_config.seed,
+                model_config.dataset_config.num_seeds,
+                L,
+                M,
+            )
+            paths = dataset_config.get_paths()
+            print(f"  L={L}, M={M} -> {paths['dataset_dir']}")
+        return None
 
     # Create training configuration
     training_config = create_training_config(model_config=model_config, config_override_path=args.config_override)
@@ -254,10 +288,26 @@ def main():
     if args.dry_run:
         logger.info("DRY RUN MODE - Configuration validation only")
         logger.info(f"Model config: {model_config.to_name()}")
-        logger.info(f"Dataset base: {model_config.dataset_config.to_base_name()}")
-        logger.info(f"Model type: {model_config.model_type}")
-        logger.info(f"Output directory: {training_config.output_dir}")
-        logger.info(f"Dataset path: {training_config.dataset_path}")
+        logger.info(f"Dataset config: {model_config.dataset_config.to_name()}")
+        logger.info(f"Discovered L={model_config.dataset_config.L}, M={model_config.dataset_config.m}")
+
+        # Validate paths
+        paths = model_config.get_model_paths()
+        logger.info(f"Dataset path: {paths['dataset_dir']}")
+        logger.info(f"Model output path: {paths['model_dir']}")
+        logger.info(f"Config path: {paths['config_dir']}")
+
+        # Check if paths exist
+        if paths["dataset_dir"].exists():
+            logger.info("✓ Dataset directory exists")
+        else:
+            logger.error(f"✗ Dataset directory not found: {paths['dataset_dir']}")
+
+        if paths["config_dir"].exists():
+            logger.info("✓ Config directory exists")
+        else:
+            logger.warning(f"⚠ Config directory not found: {paths['config_dir']}")
+
         logger.info("✓ Configuration validation successful")
         return None
 
@@ -269,23 +319,15 @@ def main():
     logger.info("TRAINING CONFIGURATION")
     logger.info("=" * 60)
     logger.info(f"Experiment: {model_config.to_name()}")
-    logger.info(f"Dataset base: {model_config.dataset_config.to_base_name()}")
+    logger.info(f"Dataset: {model_config.dataset_config.to_name()}")
+    logger.info(f"Discovered: L={model_config.dataset_config.L}, M={model_config.dataset_config.m}")
     logger.info(f"Model type: {model_config.model_type}")
     logger.info(f"Task: {training_config.task_name}")
     logger.info(f"Learning rate: {training_config.learning_rate}")
     logger.info(f"Epochs: {training_config.num_train_epochs}")
-    logger.info(f"Train batch size: {training_config.per_device_train_batch_size}")
-    logger.info(f"Eval batch size: {training_config.per_device_eval_batch_size}")
-    logger.info(f"Vocab size: {training_config.vocab_size} (effective: {training_config.effective_vocab_size})")
-    logger.info(f"Max sequence length: {training_config.max_sequence_length}")
-    logger.info(f"Pack sequences: {training_config.pack_sequences}")
-    logger.info(f"Shuffle before packing: {training_config.shuffle_before_packing}")
-    if training_config.shuffle_before_packing:
-        logger.info(f"Shuffle strategy: {training_config.shuffle_strategy}")
-    logger.info(f"Output dir: {training_config.output_dir}")
-    logger.info(f"Dataset path: {training_config.dataset_path}")
-    logger.info(f"Base dataset dir: {paths['base_dataset_dir']}")
-    logger.info(f"Config dir: {paths['config_dir']}")
+    logger.info(f"Dataset path: {paths['dataset_dir']}")
+    logger.info(f"Model output: {paths['model_dir']}")
+    logger.info(f"Config path: {paths['config_dir']}")
     logger.info("=" * 60)
 
     # Create model based on configuration
@@ -358,14 +400,18 @@ def main():
     # Log dataset info
     dataset_meta = metadata.get("dataset_metadata", {})
     logger.info("Dataset preparation completed:")
-    logger.info(f"  Original size: {dataset_meta.get('original_size', 'N/A'):,}")
-    logger.info(f"  Filtered size: {dataset_meta.get('filtered_size', 'N/A'):,}")
-    logger.info(f"  Packed size: {dataset_meta.get('packed_size', 'N/A'):,}")
-    logger.info(f"  Train size: {dataset_meta.get('train_size', 'N/A'):,}")
-    logger.info(f"  Eval size: {dataset_meta.get('eval_size', 'N/A'):,}")
+    logger.info(f"  Original size: {safe_format_number(dataset_meta.get('original_size'))}")
+    logger.info(f"  Filtered size: {safe_format_number(dataset_meta.get('filtered_size'))}")
+    logger.info(f"  Packed size: {safe_format_number(dataset_meta.get('packed_size'))}")
+    logger.info(f"  Train size: {safe_format_number(dataset_meta.get('train_size'))}")
+    logger.info(f"  Eval size: {safe_format_number(dataset_meta.get('eval_size'))}")
     logger.info(f"  Shuffling enabled: {dataset_meta.get('shuffling_enabled', False)}")
     if dataset_meta.get("shuffling_enabled"):
         logger.info(f"  Shuffle strategy: {dataset_meta.get('shuffle_strategy', 'N/A')}")
+
+    # Alternative approach - check if value is numeric before formatting:
+    dataset_meta = metadata.get("dataset_metadata", {})
+    logger.info("Dataset preparation completed:")
 
     # Train the model
     logger.info("=" * 60)
@@ -409,6 +455,13 @@ def main():
     logger.info("=" * 60)
 
     return results
+
+
+def safe_format_number(value, default="N/A"):
+    """Safely format a number with commas, handling non-numeric values."""
+    if isinstance(value, (int, float)) and value is not None:
+        return f"{value:,}"
+    return default
 
 
 if __name__ == "__main__":

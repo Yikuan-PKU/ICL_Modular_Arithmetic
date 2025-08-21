@@ -10,28 +10,25 @@
 
 SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/train"
 
-# Define experiment parameters
+# Define experiment parameters using the new simplified structure
 DATASET_TYPE="uniform"
 MODEL_TYPE="clm"
-MIXTURE_TYPE="allmix"
-TOTAL_RULES=576
+NUM_SEEDS=10
 SEED=42
 
-# Construct shared arguments
-SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --mixture-type $MIXTURE_TYPE --total-rules $TOTAL_RULES --seed $SEED"
+# Construct shared arguments (updated to match new argument structure)
+SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED"
 
 # Optional pipeline controls
 PIPELINE_ARGS="--verbose"
 
-# Experiment names for reference
-DATASET_NAME="${DATASET_TYPE}_${MIXTURE_TYPE}_${TOTAL_RULES}_${SEED}"
-MODEL_NAME="${DATASET_NAME}_${MODEL_TYPE}"
-
 echo "=========================================="
-echo "TRAINING RHM MODEL"
+echo "TRAINING MODEL"
 echo "=========================================="
 echo "Dataset: $DATASET_NAME"
 echo "Model: $MODEL_NAME"
+echo "Seed: $SEED"
+echo "Number of seeds: $NUM_SEEDS"
 echo "GPU allocation: $SLURM_GPUS_ON_NODE"
 echo "Memory: $SLURM_MEM_PER_NODE MB"
 echo "=========================================="
