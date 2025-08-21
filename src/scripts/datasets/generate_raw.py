@@ -139,7 +139,7 @@ def generate_rhm_dataset_from_config(
                 seed_sample=dataset_config.seed,
                 train_size=rhm_params["samples_per_config"],
                 test_size=0,
-                replacement=True,  # Required for custom probabilities
+                replacement=False,  # Required for custom probabilities
                 input_format="long",
             )
 

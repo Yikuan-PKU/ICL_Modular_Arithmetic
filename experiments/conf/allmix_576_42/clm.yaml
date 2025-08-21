@@ -11,12 +11,12 @@ max_position_embeddings: 2048
 
 # Training parameters
 task_name: "clm"
-num_train_epochs: 50
+num_train_epochs: 100
 per_device_train_batch_size: 32
 per_device_eval_batch_size: 64
 gradient_accumulation_steps: 1
-learning_rate: 1e-4
-weight_decay: 0.01
+learning_rate: 1e-3
+weight_decay: 5
 warmup_ratio: 0.1
 lr_scheduler_type: "linear"
 
@@ -26,7 +26,7 @@ pack_sequences: true
 mlm: false  # CLM doesn't use masking
 
 # NEW: Cross-configuration shuffling
-shuffle_before_packing: true
+shuffle_before_packing: "false"
 shuffle_strategy: "global"
 shuffle_seed: 42
 
@@ -46,8 +46,8 @@ save_total_limit: 10
 load_best_model_at_end: true
 metric_for_best_model: "eval_loss"
 
-# Dataset filtering (optional)
-# filter_config_L: 2
+# # Dataset filtering (optional)
+# filter_config_L: 3
 # filter_config_m: 2
 # max_samples: 10000
 
