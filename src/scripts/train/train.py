@@ -227,7 +227,6 @@ def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.An
 
     # with open(metadata_file, "w") as f:
     # json.dump(eval_metadata, f, indent=2)
-
     # logger.info(f"Saved evaluation metadata to: {metadata_file}")
 
 
