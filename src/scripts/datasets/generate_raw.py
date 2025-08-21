@@ -1,3 +1,4 @@
+import json
 import logging
 import pickle
 import warnings
@@ -78,8 +79,13 @@ def create_rule_probabilities(
 
 def generate_rhm_dataset_for_config(
     L: int, m: int, random_seeds: list[int], yaml_config: dict[str, Any]
-) -> tuple[Dataset, dict[str, Any]]:
-    """Generate RHM dataset for a specific (L,M) configuration using multiple random seeds."""
+) -> tuple[dict[int, Dataset], dict[str, Any]]:
+    """Generate RHM dataset for a specific (L,M) configuration using multiple random seeds.
+
+    Returns:
+        tuple: (dict of datasets per seed, combined metadata)
+
+    """
     # Extract configuration sections
     rhm_params = yaml_config["rhm_params"]
     distribution_config = yaml_config["distribution"]
@@ -87,17 +93,15 @@ def generate_rhm_dataset_for_config(
     logger.info(f"Generating dataset for L={L}, m={m} with {len(random_seeds)} seeds")
     logger.info(f"Seeds: {random_seeds}")
 
-    # Initialize storage for all sequences and metadata
-    all_sequences = []
-    all_seed_ids = []
-    all_sequence_lengths = []
-
+    # Initialize storage for datasets per seed and metadata
+    seed_datasets = {}
     config_stats = {}
     rules_by_seed = {}
 
     total_sequences = 0
+    all_sequence_lengths = []
 
-    # Generate data for each random seed
+    # Generate data for each random seed separately
     for seed_idx, random_seed in enumerate(random_seeds):
         logger.info(f"  Generating data with seed {random_seed} ({seed_idx + 1}/{len(random_seeds)})")
 
@@ -147,9 +151,17 @@ def generate_rhm_dataset_for_config(
             # Convert to lists for HuggingFace compatibility
             sequences_list = sequences.tolist() if hasattr(sequences, "tolist") else [list(seq) for seq in sequences]
 
+            # Create individual dataset for this seed
+            seed_dataset_dict = {
+                "input_ids": sequences_list,
+                "length": [len(seq) for seq in sequences_list],
+            }
+
+            seed_datasets[random_seed] = Dataset.from_dict(seed_dataset_dict)
+
             # Calculate statistics for this seed
             seq_lengths = [len(seq) for seq in sequences_list]
-            config_stats[seed_idx] = {
+            config_stats[random_seed] = {
                 "seed": random_seed,
                 "L": L,
                 "m": m,
@@ -162,7 +174,7 @@ def generate_rhm_dataset_for_config(
             }
 
             # Store rules for this seed
-            rules_by_seed[seed_idx] = {
+            rules_by_seed[random_seed] = {
                 "seed": random_seed,
                 "L": L,
                 "m": m,
@@ -171,12 +183,9 @@ def generate_rhm_dataset_for_config(
                 "distribution_type": distribution_config["type"],
             }
 
-            # Add to master dataset
-            all_sequences.extend(sequences_list)
-            all_seed_ids.extend([seed_idx] * len(sequences_list))
-            all_sequence_lengths.extend(seq_lengths)
-
+            # Update totals
             total_sequences += len(sequences_list)
+            all_sequence_lengths.extend(seq_lengths)
 
             logger.info(f"    ✓ Generated {len(sequences_list)} sequences")
             logger.info(f"    ✓ Length range: {min(seq_lengths)}-{max(seq_lengths)} tokens")
@@ -199,7 +208,7 @@ def generate_rhm_dataset_for_config(
         },
         "seed_info": {
             "random_seeds": random_seeds,
-            "successful_seeds": [stats["seed"] for stats in config_stats.values()],
+            "successful_seeds": [seed for seed in config_stats],
             "num_seeds": len(random_seeds),
             "successful_count": len(config_stats),
         },
@@ -215,25 +224,15 @@ def generate_rhm_dataset_for_config(
         },
     }
 
-    # Create HuggingFace Dataset
-    logger.info(f"  Creating HuggingFace Dataset for L={L}, m={m}...")
-    dataset_dict = {
-        "input_ids": all_sequences,
-        "seed_id": all_seed_ids,  # Which seed generated this sequence
-        "length": all_sequence_lengths,
-    }
+    logger.info(f"  ✓ Created {len(seed_datasets)} separate seed datasets with {total_sequences} total sequences")
 
-    dataset = Dataset.from_dict(dataset_dict)
-
-    logger.info(f"  ✓ Created dataset with {len(dataset)} total sequences")
-
-    return dataset, metadata
+    return seed_datasets, metadata
 
 
 def save_dataset_with_metadata(
-    dataset: Dataset, metadata: dict[str, Any], dataset_config: DatasetConfig, L: int, m: int, args
+    seed_datasets: dict[int, Dataset], metadata: dict[str, Any], dataset_config: DatasetConfig, L: int, m: int, args
 ) -> None:
-    """Save dataset and metadata for a specific (L,M) configuration."""
+    """Save separate seed datasets and metadata for a specific (L,M) configuration."""
     paths = dataset_config.get_config_paths(L, m)
     dataset_dir = paths["dataset_dir"]
     config_base_dir = paths["config_base_dir"]
@@ -243,22 +242,37 @@ def save_dataset_with_metadata(
     config_base_dir.mkdir(parents=True, exist_ok=True)
 
     # Check for existing data
-    if (dataset_dir / "dataset").exists() and not args.overwrite:
+    if any((dataset_dir / f"seed_{seed}").exists() for seed in seed_datasets) and not args.overwrite:
         if args.resume:
-            logger.info(f"Dataset already exists for L={L}, m={m} at {dataset_dir}, skipping")
+            logger.info(f"Seed datasets already exist for L={L}, m={m} at {dataset_dir}, skipping")
             return
         raise FileExistsError(
-            f"Dataset already exists for L={L}, m={m} at {dataset_dir}. Use --overwrite to replace or --resume to skip."
+            f"Seed datasets already exist for L={L}, m={m} at {dataset_dir}. Use --overwrite to replace or --resume to skip."
         )
 
-    # Save HuggingFace dataset
-    dataset.save_to_disk(str(dataset_dir / "dataset"))
-    logger.info(f"✓ Saved HuggingFace dataset to {dataset_dir / 'dataset'}")
+    # Save each seed dataset separately
+    for seed, dataset in seed_datasets.items():
+        seed_dir = dataset_dir / f"seed_{seed}"
+        seed_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save metadata
+        dataset.save_to_disk(str(seed_dir / "dataset"))
+        logger.info(f"  ✓ Saved seed {seed} dataset to {seed_dir / 'dataset'}")
+
+    # Save combined metadata
     with (dataset_dir / "metadata.pkl").open("wb") as f:
         pickle.dump(metadata, f)
-    logger.info(f"✓ Saved metadata to {dataset_dir / 'metadata.pkl'}")
+    logger.info(f"✓ Saved metadata to {config_base_dir / 'metadata.pkl'}")
+
+    # Save seed index for easy discovery
+    seed_index = {
+        "available_seeds": list(seed_datasets.keys()),
+        "num_seeds": len(seed_datasets),
+        "dataset_paths": {seed: f"seed_{seed}/dataset" for seed in seed_datasets},
+    }
+
+    with (dataset_dir / "seed_index.json").open("w") as f:
+        json.dump(seed_index, f, indent=2)
+    logger.info(f"✓ Saved seed index to {config_base_dir / 'seed_index.json'}")
 
     # Save human-readable summary
     with (dataset_dir / "dataset_summary.txt").open("w") as f:
@@ -276,7 +290,13 @@ def save_dataset_with_metadata(
         f.write(f"  Successful seeds: {metadata['seed_info']['successful_seeds']}\n")
         f.write(f"  Success rate: {metadata['seed_info']['successful_count']}/{metadata['seed_info']['num_seeds']}\n\n")
 
-        f.write("Dataset Statistics:\n")
+        f.write("Dataset Structure:\n")
+        f.write("  datasets/\n")
+        for seed in seed_datasets:
+            f.write(f"    └── seed_{seed}/dataset/  # {metadata['config_stats'][seed]['num_sequences']} sequences\n")
+        f.write("\n")
+
+        f.write("Dataset Statistics (Combined):\n")
         stats = metadata["dataset_stats"]
         f.write(f"  Total sequences: {stats['total_sequences']:,}\n")
         f.write(f"  Total tokens: {stats['total_tokens']:,}\n")
@@ -286,14 +306,20 @@ def save_dataset_with_metadata(
         f.write(f"  Distribution: {metadata['config_params']['distribution_config']['type']}\n\n")
 
         f.write("Per-Seed Statistics:\n")
-        for seed_idx, seed_stats in metadata["config_stats"].items():
-            f.write(f"  Seed {seed_stats['seed']}:\n")
+        for seed, seed_stats in metadata["config_stats"].items():
+            f.write(f"  Seed {seed}:\n")
+            f.write(f"    Path: seed_{seed}/dataset/\n")
             f.write(f"    Sequences: {seed_stats['num_sequences']:,}, Tokens: {seed_stats['total_tokens']:,}\n")
             f.write(
                 f"    Length: {seed_stats['min_length']}-{seed_stats['max_length']} (avg: {seed_stats['avg_length']:.1f})\n"
             )
 
     logger.info(f"✓ Saved summary to {dataset_dir / 'dataset_summary.txt'}")
+
+    # Log final structure
+    logger.info(f"✓ Dataset structure for L={L}, m={m}:")
+    for seed in seed_datasets:
+        logger.info(f"    {dataset_dir / f'seed_{seed}' / 'dataset'}")
 
 
 def extract_unique_configurations(yaml_config: dict[str, Any]) -> list[tuple[int, int]]:
@@ -420,7 +446,7 @@ def main():
     if args.verbose:
         logger.info(f"Dataset: {dataset_config.to_name()}")
         logger.info(
-            f"Output pattern: datasets/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/train/"
+            f"Output pattern: datasets/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/train/seed_{{seed}}/dataset/"
         )
 
     # Generate datasets for each discovered (L,M) configuration
@@ -440,11 +466,11 @@ def main():
             # Load configuration for this specific (L,M) pair
             yaml_config = load_config_for_LM(dataset_config, L, m)
 
-            # Generate dataset for this configuration
-            dataset, metadata = generate_rhm_dataset_for_config(L, m, random_seeds, yaml_config)
+            # Generate separate datasets for each seed
+            seed_datasets, metadata = generate_rhm_dataset_for_config(L, m, random_seeds, yaml_config)
 
-            # Save dataset and metadata
-            save_dataset_with_metadata(dataset, metadata, dataset_config, L, m, args)
+            # Save separate seed datasets and metadata
+            save_dataset_with_metadata(seed_datasets, metadata, dataset_config, L, m, args)
 
             successful_configs += 1
             logger.info(f"✓ Successfully completed L={L}, m={m}")
