@@ -240,7 +240,6 @@ class RHMTrainer(Trainer):
 
         # Save seed metrics
         seed_metrics_file = output_path / "seed_training_metrics.json"
-        import json
 
         seed_metrics_data = {
             "seed_metrics": dict(self.seed_metrics),
@@ -260,11 +259,6 @@ class RHMTrainer(Trainer):
             },
             "available_seeds": list(self.train_seed_datasets.keys()),
         }
-
-        with seed_metrics_file.open("w") as f:
-            json.dump(seed_metrics_data, f, indent=2)
-
-        logger.info(f"Saved seed training metrics to: {seed_metrics_file}")
 
 
 class SeedMetricsCallback(TrainerCallback):

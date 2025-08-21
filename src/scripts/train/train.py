@@ -2,7 +2,6 @@
 """RHM Model Training Main Script with Flattened Config Support"""
 
 import argparse
-import json
 import logging
 import re
 import typing as t
@@ -226,10 +225,10 @@ def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.An
         "dataset_generation_params": training_metadata.get("dataset_generation_params", {}),
     }
 
-    with open(metadata_file, "w") as f:
-        json.dump(eval_metadata, f, indent=2)
+    # with open(metadata_file, "w") as f:
+    # json.dump(eval_metadata, f, indent=2)
 
-    logger.info(f"Saved evaluation metadata to: {metadata_file}")
+    # logger.info(f"Saved evaluation metadata to: {metadata_file}")
 
 
 def main():
