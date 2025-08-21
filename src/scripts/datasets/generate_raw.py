@@ -10,7 +10,7 @@ import yaml
 from datasets import Dataset
 
 from ICL.datasets.RHM import RandomHierarchyModel
-from ICL.settings import DatasetConfig, create_base_parser, parse_dataset_config
+from ICL.settings import PATH, DatasetConfig, create_base_parser, parse_dataset_config, validate_args
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def create_dataset_parser():
     """Create argument parser for dataset generation."""
-    parser = create_base_parser(require_model_type=False)
+    parser = create_base_parser(require_eval_flag=True)  # Allow eval flag for future use
     parser.description = "Generate RHM dataset for hierarchical learning experiments"
 
     # Dataset-specific arguments
@@ -76,34 +76,30 @@ def create_rule_probabilities(
     raise ValueError(f"Unsupported distribution type: {distribution_type}")
 
 
-def generate_rhm_dataset_from_config(
-    dataset_config: DatasetConfig, yaml_config: dict[str, Any]
+def generate_rhm_dataset_for_config(
+    L: int, m: int, random_seeds: list[int], yaml_config: dict[str, Any]
 ) -> tuple[Dataset, dict[str, Any]]:
-    """Generate RHM dataset using dataset config and YAML parameters."""
+    """Generate RHM dataset for a specific (L,M) configuration using multiple random seeds."""
     # Extract configuration sections
     rhm_params = yaml_config["rhm_params"]
-    configurations = yaml_config["configurations"]
     distribution_config = yaml_config["distribution"]
 
-    logger.info(f"Generating dataset: {dataset_config.to_name()}")
-    logger.info(f"Distribution type: {distribution_config['type']}")
-    logger.info(f"Configurations: {len(configurations)} (L,m) pairs")
+    logger.info(f"Generating dataset for L={L}, m={m} with {len(random_seeds)} seeds")
+    logger.info(f"Seeds: {random_seeds}")
 
     # Initialize storage for all sequences and metadata
     all_sequences = []
-    all_task_ids = []
-    all_config_L = []
-    all_config_m = []
+    all_seed_ids = []
     all_sequence_lengths = []
-    all_rules = {}
+
     config_stats = {}
+    rules_by_seed = {}
 
     total_sequences = 0
 
-    # Generate data for each (L,m) configuration
-    for task_id, config in enumerate(configurations):
-        L, m = config["L"], config["m"]
-        logger.info(f"Generating Task {task_id}: L={L} (depth), m={m} (multiplicity)")
+    # Generate data for each random seed
+    for seed_idx, random_seed in enumerate(random_seeds):
+        logger.info(f"  Generating data with seed {random_seed} ({seed_idx + 1}/{len(random_seeds)})")
 
         try:
             # Create initial RHM to get rules structure
@@ -113,8 +109,8 @@ def generate_rhm_dataset_from_config(
                 num_synonyms=m,
                 tuple_size=rhm_params["tuple_size"],
                 num_layers=L,
-                seed_rules=task_id + dataset_config.seed,  # Unique rules per task
-                seed_sample=dataset_config.seed,
+                seed_rules=random_seed,  # Use random seed for rules
+                seed_sample=random_seed + 1,  # Slightly different seed for sampling
                 train_size=1,  # Minimal size to get rules
                 replacement=True,
                 input_format="long",
@@ -135,8 +131,8 @@ def generate_rhm_dataset_from_config(
                 tuple_size=rhm_params["tuple_size"],
                 num_layers=L,
                 probability=probability,
-                seed_rules=task_id + dataset_config.seed,
-                seed_sample=dataset_config.seed,
+                seed_rules=random_seed,
+                seed_sample=random_seed + 1,
                 train_size=rhm_params["samples_per_config"],
                 test_size=0,
                 replacement=True,  # Required for custom probabilities
@@ -151,9 +147,10 @@ def generate_rhm_dataset_from_config(
             # Convert to lists for HuggingFace compatibility
             sequences_list = sequences.tolist() if hasattr(sequences, "tolist") else [list(seq) for seq in sequences]
 
-            # Calculate statistics
+            # Calculate statistics for this seed
             seq_lengths = [len(seq) for seq in sequences_list]
-            config_stats[task_id] = {
+            config_stats[seed_idx] = {
+                "seed": random_seed,
                 "L": L,
                 "m": m,
                 "num_sequences": len(sequences_list),
@@ -164,90 +161,94 @@ def generate_rhm_dataset_from_config(
                 "distribution_type": distribution_config["type"],
             }
 
-            # Store rules and probability info
-            all_rules[task_id] = {
+            # Store rules for this seed
+            rules_by_seed[seed_idx] = {
+                "seed": random_seed,
                 "L": L,
                 "m": m,
                 "rules_dict": rules,
                 "probability_dict": probability,
                 "distribution_type": distribution_config["type"],
-                "vocab_range": f"1-{rhm_params['vocab_size']}",
-                "num_sequences": len(sequences_list),
             }
 
             # Add to master dataset
             all_sequences.extend(sequences_list)
-            all_task_ids.extend([task_id] * len(sequences_list))
-            all_config_L.extend([L] * len(sequences_list))
-            all_config_m.extend([m] * len(sequences_list))
+            all_seed_ids.extend([seed_idx] * len(sequences_list))
             all_sequence_lengths.extend(seq_lengths)
 
             total_sequences += len(sequences_list)
 
-            logger.info(f"  ✓ Generated {len(sequences_list)} sequences")
-            logger.info(f"  ✓ Length range: {min(seq_lengths)}-{max(seq_lengths)} tokens")
-            logger.info(f"  ✓ Total tokens: {sum(seq_lengths):,}")
+            logger.info(f"    ✓ Generated {len(sequences_list)} sequences")
+            logger.info(f"    ✓ Length range: {min(seq_lengths)}-{max(seq_lengths)} tokens")
 
         except Exception as e:
-            logger.info(f"  ✗ Error generating task {task_id} (L={L}, m={m}): {e}")
-            warnings.warn(f"Skipping configuration L={L}, m={m} due to error: {e}")
+            logger.error(f"    ✗ Error generating data with seed {random_seed}: {e}")
+            warnings.warn(f"Skipping seed {random_seed} for L={L}, m={m} due to error: {e}")
             continue
 
-    # Create comprehensive metadata
-    max_L = max([config["L"] for config in configurations]) if configurations else 0
+    if total_sequences == 0:
+        raise RuntimeError(f"Failed to generate any data for L={L}, m={m}")
 
+    # Create comprehensive metadata for this configuration
     metadata = {
-        "generation_params": rhm_params,
-        "distribution_config": distribution_config,
-        "configurations": [{"task_id": i, **config} for i, config in enumerate(configurations)],
-        "config_stats": config_stats,
-        "rules": all_rules,
-        "derived_metadata": {
-            "max_L": max_L,
-            "total_rules_param": dataset_config.total_rules,  # From experiment name
-            "actual_configs_generated": len(config_stats),
+        "config_params": {
+            "L": L,
+            "m": m,
+            "generation_params": rhm_params,
+            "distribution_config": distribution_config,
         },
+        "seed_info": {
+            "random_seeds": random_seeds,
+            "successful_seeds": [stats["seed"] for stats in config_stats.values()],
+            "num_seeds": len(random_seeds),
+            "successful_count": len(config_stats),
+        },
+        "config_stats": config_stats,
+        "rules_by_seed": rules_by_seed,
         "dataset_stats": {
             "total_sequences": total_sequences,
-            "total_configs": len(configurations),
-            "successful_configs": len(config_stats),
-            "min_seq_length": min(all_sequence_lengths) if all_sequence_lengths else 0,
-            "max_seq_length": max(all_sequence_lengths) if all_sequence_lengths else 0,
-            "avg_seq_length": sum(all_sequence_lengths) / len(all_sequence_lengths) if all_sequence_lengths else 0,
+            "min_seq_length": min(all_sequence_lengths),
+            "max_seq_length": max(all_sequence_lengths),
+            "avg_seq_length": sum(all_sequence_lengths) / len(all_sequence_lengths),
             "total_tokens": sum(all_sequence_lengths),
             "vocab_range": f"1-{rhm_params['vocab_size']} (0 reserved for special tokens)",
         },
     }
 
     # Create HuggingFace Dataset
-    logger.info("Creating HuggingFace Dataset...")
+    logger.info(f"  Creating HuggingFace Dataset for L={L}, m={m}...")
     dataset_dict = {
         "input_ids": all_sequences,
-        "task_id": all_task_ids,
-        "config_L": all_config_L,
-        "config_m": all_config_m,
+        "seed_id": all_seed_ids,  # Which seed generated this sequence
         "length": all_sequence_lengths,
     }
 
     dataset = Dataset.from_dict(dataset_dict)
 
+    logger.info(f"  ✓ Created dataset with {len(dataset)} total sequences")
+
     return dataset, metadata
 
 
-def save_dataset_with_metadata(dataset: Dataset, metadata: dict[str, Any], dataset_config: DatasetConfig, args) -> None:
-    """Save dataset and metadata using dataset naming."""
-    paths = dataset_config.get_dataset_paths()
+def save_dataset_with_metadata(
+    dataset: Dataset, metadata: dict[str, Any], dataset_config: DatasetConfig, L: int, m: int, args
+) -> None:
+    """Save dataset and metadata for a specific (L,M) configuration."""
+    paths = dataset_config.get_config_paths(L, m)
     dataset_dir = paths["dataset_dir"]
+    config_base_dir = paths["config_base_dir"]
 
     # Create output directory
     dataset_dir.mkdir(parents=True, exist_ok=True)
+    config_base_dir.mkdir(parents=True, exist_ok=True)
+
     # Check for existing data
     if (dataset_dir / "dataset").exists() and not args.overwrite:
         if args.resume:
-            logger.info(f"Dataset already exists at {dataset_dir}, skipping generation")
+            logger.info(f"Dataset already exists for L={L}, m={m} at {dataset_dir}, skipping")
             return
         raise FileExistsError(
-            f"Dataset already exists at {dataset_dir}. Use --overwrite to replace or --resume to skip."
+            f"Dataset already exists for L={L}, m={m} at {dataset_dir}. Use --overwrite to replace or --resume to skip."
         )
 
     # Save HuggingFace dataset
@@ -261,30 +262,116 @@ def save_dataset_with_metadata(dataset: Dataset, metadata: dict[str, Any], datas
 
     # Save human-readable summary
     with (dataset_dir / "dataset_summary.txt").open("w") as f:
-        f.write(f"RHM DATASET: {dataset_config.to_name()}\n")
+        f.write(f"RHM DATASET: L={L}, m={m}\n")
         f.write("=" * 60 + "\n\n")
-        f.write("Experiment Parameters:\n")
+        f.write("Configuration Parameters:\n")
+        f.write(f"  Hierarchy Depth (L): {L}\n")
+        f.write(f"  Multiplicity (m): {m}\n")
         f.write(f"  Dataset Type: {dataset_config.dataset_type}\n")
-        f.write(f"  Mixture Type: {dataset_config.mixture_type}\n")
-        f.write(f"  Total Rules: {dataset_config.total_rules}\n")
-        f.write(f"  Seed: {dataset_config.seed}\n\n")
+        f.write(f"  RNG Seed: {dataset_config.seed}\n")
+        f.write(f"  Num Seeds: {dataset_config.num_seeds}\n\n")
+
+        f.write("Seed Information:\n")
+        f.write(f"  Random seeds used: {metadata['seed_info']['random_seeds']}\n")
+        f.write(f"  Successful seeds: {metadata['seed_info']['successful_seeds']}\n")
+        f.write(f"  Success rate: {metadata['seed_info']['successful_count']}/{metadata['seed_info']['num_seeds']}\n\n")
 
         f.write("Dataset Statistics:\n")
-        f.write(f"  Total sequences: {metadata['dataset_stats']['total_sequences']:,}\n")
-        f.write(f"  Total tokens: {metadata['dataset_stats']['total_tokens']:,}\n")
-        f.write(f"  Vocabulary: {metadata['dataset_stats']['vocab_range']}\n")
-        f.write(
-            f"  Sequence length: {metadata['dataset_stats']['min_seq_length']}-{metadata['dataset_stats']['max_seq_length']}\n"
-        )
-        f.write(f"  Average length: {metadata['dataset_stats']['avg_seq_length']:.1f}\n")
-        f.write(f"  Distribution: {metadata['distribution_config']['type']}\n\n")
+        stats = metadata["dataset_stats"]
+        f.write(f"  Total sequences: {stats['total_sequences']:,}\n")
+        f.write(f"  Total tokens: {stats['total_tokens']:,}\n")
+        f.write(f"  Vocabulary: {stats['vocab_range']}\n")
+        f.write(f"  Sequence length: {stats['min_seq_length']}-{stats['max_seq_length']}\n")
+        f.write(f"  Average length: {stats['avg_seq_length']:.1f}\n")
+        f.write(f"  Distribution: {metadata['config_params']['distribution_config']['type']}\n\n")
 
-        f.write("Configuration Details:\n")
-        for task_id, stats in metadata["config_stats"].items():
-            f.write(f"  Task {task_id}: L={stats['L']}, m={stats['m']}\n")
-            f.write(f"    Sequences: {stats['num_sequences']:,}, Tokens: {stats['total_tokens']:,}\n")
+        f.write("Per-Seed Statistics:\n")
+        for seed_idx, seed_stats in metadata["config_stats"].items():
+            f.write(f"  Seed {seed_stats['seed']}:\n")
+            f.write(f"    Sequences: {seed_stats['num_sequences']:,}, Tokens: {seed_stats['total_tokens']:,}\n")
+            f.write(
+                f"    Length: {seed_stats['min_length']}-{seed_stats['max_length']} (avg: {seed_stats['avg_length']:.1f})\n"
+            )
 
     logger.info(f"✓ Saved summary to {dataset_dir / 'dataset_summary.txt'}")
+
+
+def extract_unique_configurations(yaml_config: dict[str, Any]) -> list[tuple[int, int]]:
+    """Extract unique (L,M) configurations from YAML config."""
+    configurations = yaml_config["configurations"]
+    unique_configs = []
+    seen = set()
+
+    for config in configurations:
+        L, m = config["L"], config["m"]
+        if (L, m) not in seen:
+            unique_configs.append((L, m))
+            seen.add((L, m))
+        else:
+            logger.warning(f"Duplicate configuration L={L}, m={m} found, skipping")
+
+    logger.info(f"Found {len(unique_configs)} unique (L,M) configurations: {unique_configs}")
+    return unique_configs
+
+
+def discover_configurations(dataset_config: DatasetConfig) -> list[tuple[int, int]]:
+    """Discover available (L,M) configurations by scanning config directories."""
+    import re
+
+    # Try multiple patterns for flexibility
+    patterns = [
+        rf"{dataset_config.dataset_type}_{dataset_config.num_seeds}_L(\d+)_M(\d+)",  # Exact match
+        rf"{dataset_config.dataset_type}_\d+_L(\d+)_M(\d+)",  # Any num_seeds
+        r"L(\d+)_M(\d+)",  # Just L*_M*
+    ]
+
+    configurations = []
+
+    if not PATH.conf_dir.exists():
+        raise FileNotFoundError(f"Configuration directory not found: {PATH.conf_dir}")
+
+    for config_dir in PATH.conf_dir.iterdir():
+        if config_dir.is_dir():
+            for pattern in patterns:
+                match = re.match(pattern, config_dir.name)
+                if match:
+                    L, m = int(match.group(1)), int(match.group(2))
+
+                    # Check if train_dataset.yaml exists in this directory
+                    yaml_file = config_dir / "train_dataset.yaml"
+                    if yaml_file.exists():
+                        configurations.append((L, m))
+                        logger.info(f"Found configuration: L={L}, m={m} at {config_dir}")
+                        break  # Stop checking other patterns for this directory
+                    logger.warning(f"Config directory {config_dir} missing train_dataset.yaml")
+
+    if not configurations:
+        logger.error("No valid configurations found. Searched patterns:")
+        for pattern in patterns:
+            logger.error(f"  - {pattern}")
+        logger.error(f"Available directories in {PATH.conf_dir}:")
+        if PATH.conf_dir.exists():
+            for item in PATH.conf_dir.iterdir():
+                logger.error(f"  - {item.name}")
+        raise FileNotFoundError(
+            "No valid configurations found. Please create config directories matching one of the patterns above."
+        )
+
+    # Remove duplicates and sort
+    configurations = sorted(list(set(configurations)))
+    logger.info(f"Discovered {len(configurations)} configurations: {configurations}")
+    return configurations
+
+
+def load_config_for_LM(dataset_config: DatasetConfig, L: int, m: int) -> dict[str, Any]:
+    """Load YAML configuration for a specific (L,M) pair."""
+    paths = dataset_config.get_config_paths(L, m)
+    config_path = paths["config_dir"] / "train_dataset.yaml"
+
+    try:
+        return load_yaml_config(config_path)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
 
 def main():
@@ -292,52 +379,86 @@ def main():
     parser = create_dataset_parser()
     args = parser.parse_args()
 
-    # Convert to dataset config (no model type needed)
+    # Validate arguments
+    validate_args(args)
+
+    # Convert to dataset config
     dataset_config = parse_dataset_config(args)
-    paths = dataset_config.get_dataset_paths()
 
-    # Load dataset configuration from YAML
-    config_path = paths["config_dir"] / "train_dataset.yaml"
-
+    # Discover available (L,M) configurations from config directories
     try:
-        yaml_config = load_yaml_config(config_path)
-    except FileNotFoundError:
-        logger.info(f"Error: Configuration file not found at {config_path}")
-        logger.info("Please ensure the YAML configuration exists before running dataset generation.")
+        unique_configs = discover_configurations(dataset_config)
+    except FileNotFoundError as e:
+        logger.error(f"Error: {e}")
+        logger.error("Please ensure the YAML configurations exist before running dataset generation.")
+        logger.error(
+            f"Expected pattern: conf/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/train_dataset.yaml"
+        )
         return 1
 
     if args.validate_only:
         logger.info(f"Configuration validation successful for {dataset_config.to_name()}")
-        logger.info(f"Configurations to generate: {len(yaml_config['configurations'])}")
+        logger.info(f"Found configurations: {len(unique_configs)}")
+        logger.info(f"Configurations: {unique_configs}")
+        logger.info(f"Random seeds to generate: {dataset_config.num_seeds}")
+
+        # Validate each configuration file
+        for L, m in unique_configs:
+            try:
+                yaml_config = load_config_for_LM(dataset_config, L, m)
+                logger.info(f"  ✓ L={L}, m={m}: Valid YAML configuration")
+            except Exception as e:
+                logger.error(f"  ✗ L={L}, m={m}: Invalid configuration - {e}")
         return 0
+
+    # Generate random seeds using the provided RNG seed
+    logger.info(f"Generating {dataset_config.num_seeds} random seeds using RNG seed {dataset_config.seed}")
+    np.random.seed(dataset_config.seed)
+    random_seeds = np.random.randint(0, 2**31, size=dataset_config.num_seeds).tolist()
+    logger.info(f"Generated random seeds: {random_seeds}")
 
     if args.verbose:
         logger.info(f"Dataset: {dataset_config.to_name()}")
-        logger.info(f"Config directory: {paths['config_dir']}")
-        logger.info(f"Output directory: {paths['dataset_dir']}")
+        logger.info(
+            f"Output pattern: datasets/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/train/"
+        )
 
-    # Generate dataset
-    try:
-        dataset, metadata = generate_rhm_dataset_from_config(dataset_config, yaml_config)
-        save_dataset_with_metadata(dataset, metadata, dataset_config, args)
+    # Generate datasets for each discovered (L,M) configuration
+    total_configs = len(unique_configs)
+    successful_configs = 0
+    failed_configs = []
 
-        logger.info(f"\n{'=' * 60}")
-        logger.info("DATASET GENERATION COMPLETE")
-        logger.info(f"{'=' * 60}")
-        logger.info(f"Dataset: {dataset_config.to_name()}")
-        logger.info(f"Total sequences: {len(dataset):,}")
-        logger.info(f"Output directory: {paths['dataset_dir']}")
-        logger.info(f"{'=' * 60}")
+    logger.info(f"\n{'=' * 60}")
+    logger.info("STARTING DATASET GENERATION")
+    logger.info(f"{'=' * 60}")
 
-        return 0
+    for config_idx, (L, m) in enumerate(unique_configs, 1):
+        logger.info(f"\nProcessing configuration {config_idx}/{total_configs}: L={L}, m={m}")
+        logger.info("-" * 40)
 
-    except Exception as e:
-        logger.info(f"Error during dataset generation: {e}")
-        if args.verbose:
-            import traceback
+        try:
+            # Load configuration for this specific (L,M) pair
+            yaml_config = load_config_for_LM(dataset_config, L, m)
 
-            traceback.print_exc()
-        return 1
+            # Generate dataset for this configuration
+            dataset, metadata = generate_rhm_dataset_for_config(L, m, random_seeds, yaml_config)
+
+            # Save dataset and metadata
+            save_dataset_with_metadata(dataset, metadata, dataset_config, L, m, args)
+
+            successful_configs += 1
+            logger.info(f"✓ Successfully completed L={L}, m={m}")
+
+        except Exception as e:
+            logger.error(f"✗ Failed to generate dataset for L={L}, m={m}: {e}")
+            failed_configs.append((L, m, str(e)))
+            if args.verbose:
+                import traceback
+
+                traceback.print_exc()
+            continue
+
+    return 0 if successful_configs > 0 else 1
 
 
 if __name__ == "__main__":
