@@ -1,13 +1,8 @@
 """RHM Training Configuration with Custom Tokenizer Support"""
 
-import dataclasses
 import logging
-import os
-import random
-import typing as t
 from dataclasses import dataclass, field
 
-from datasets import Dataset
 from transformers import TrainingArguments
 
 from ICL.train.tokenizer import RHMTokenizer
@@ -19,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RHMTrainingConfig:
-    """Configuration for RHM training with custom tokenizer support."""
+    """Configuration for RHM training with seed-based batching support."""
 
     # Model configuration
     model_name_or_path: str | None = None
@@ -49,34 +44,39 @@ class RHMTrainingConfig:
     warmup_ratio: float = 0.1
     lr_scheduler_type: str = "linear"
 
-    # Add these special token configuration fields:
+    # Special token IDs
     pad_token_id: int = 0
     mask_token_id: int = vocab_size + 1
     cls_token_id: int = vocab_size + 2
     sep_token_id: int = vocab_size + 3
 
-    # Sequence processing
+    # Sequence processing (FIXED - always pack)
     max_sequence_length: int = 512
-    pack_sequences: bool = True
+    pack_sequences: bool = True  # Always True, no longer configurable
     mlm: bool = True
     mlm_probability: float = 0.15
 
-    # NEW: Cross-configuration shuffling
+    # Cross-configuration shuffling (before packing)
     shuffle_before_packing: bool = False
     shuffle_seed: int = 42
-    shuffle_strategy: str = "global"  # "global", "balanced", "weighted"
+    shuffle_strategy: str = "global"  # "global", "balanced"
 
-    # Checkpoint configuration
-    save_strategy: str = "steps"
-    save_steps: int = 500
-    save_total_limit: int = 5
+    # NEW: Seed-based batching (during training)
+    seed_balanced_batching: bool = True
+    seed_sampling_strategy: str = "balanced"  # "balanced", "random", "weighted"
+    seeds_per_batch: int | None = None  # None = use all available seeds
+
+    # Checkpoint configuration - UPDATED for epoch-based checkpointing
+    save_strategy: str = "epoch"  # Changed from "steps" to "epoch"
+    save_steps: int = 1  # Save every epoch
+    save_total_limit: int = 10  # Keep more checkpoints for epoch-based saving
     load_best_model_at_end: bool = True
     metric_for_best_model: str = "eval_loss"
     greater_is_better: bool = False
 
-    # Evaluation configuration
-    evaluation_strategy: str = "steps"
-    eval_steps: int = 500
+    # Evaluation configuration - UPDATED for epoch-based evaluation
+    evaluation_strategy: str = "epoch"  # Changed from "steps" to "epoch"
+    eval_steps: int = 1  # Evaluate every epoch
     eval_accumulation_steps: int | None = None
 
     # Logging configuration
@@ -108,9 +108,7 @@ class RHMTrainingConfig:
     # Dataset configuration
     dataset_path: str | None = None
     train_split_ratio: float = 0.8
-    filter_config_L: int | None = None
-    filter_config_m: int | None = None
-    max_samples: int | None = None
+    max_samples_per_seed: int | None = None  # Limit samples per seed
 
     # Hierarchical analysis
     track_hierarchical_metrics: bool = True
@@ -135,14 +133,32 @@ class RHMTrainingConfig:
         """Get effective vocabulary size including special tokens."""
         return self.vocab_size + 5  # RHM tokens + 5 special tokens
 
+    def get_model_suffix(self) -> str:
+        """Generate model name suffix based on configuration."""
+        parts = [self.task_name]  # clm or mlm
+
+        # Add shuffling info
+        if self.shuffle_before_packing:
+            parts.append(f"{self.shuffle_strategy}shuffle")
+        else:
+            parts.append("noshuffle")
+
+        # Add seed batching info
+        if self.seed_balanced_batching:
+            parts.append(f"seed{self.seed_sampling_strategy}")
+        else:
+            parts.append("noseed")
+
+        return "_".join(parts)
+
     def to_training_arguments(self) -> TrainingArguments:
-        """Convert to HuggingFace TrainingArguments with version compatibility."""
+        """Convert to HuggingFace TrainingArguments with epoch-based checkpointing."""
         training_args_dict = {
             "output_dir": self.output_dir,
-            "save_strategy": "steps",
-            "save_steps": 500,
-            "save_total_limit": 3,
-            "load_best_model_at_end": True,
+            "save_strategy": self.save_strategy,  # "epoch"
+            "save_steps": self.save_steps,  # 1 (every epoch)
+            "save_total_limit": self.save_total_limit,
+            "load_best_model_at_end": self.load_best_model_at_end,
             "num_train_epochs": self.num_train_epochs,
             "per_device_train_batch_size": self.per_device_train_batch_size,
             "per_device_eval_batch_size": self.per_device_eval_batch_size,
@@ -151,14 +167,10 @@ class RHMTrainingConfig:
             "weight_decay": self.weight_decay,
             "warmup_ratio": self.warmup_ratio,
             "lr_scheduler_type": self.lr_scheduler_type,
-            "save_strategy": self.save_strategy,
-            "save_steps": self.save_steps,
-            "save_total_limit": self.save_total_limit,
-            "load_best_model_at_end": self.load_best_model_at_end,
             "metric_for_best_model": self.metric_for_best_model,
             "greater_is_better": self.greater_is_better,
-            "evaluation_strategy": self.evaluation_strategy,
-            "eval_steps": self.eval_steps,
+            "evaluation_strategy": self.evaluation_strategy,  # "epoch"
+            "eval_steps": self.eval_steps,  # 1 (every epoch)
             "eval_accumulation_steps": self.eval_accumulation_steps,
             "logging_strategy": self.logging_strategy,
             "logging_steps": self.logging_steps,
@@ -175,7 +187,10 @@ class RHMTrainingConfig:
             "remove_unused_columns": self.remove_unused_columns,
             "seed": self.seed,
         }
+
         if "wandb" in self.report_to:
+            import os
+
             os.environ["WANDB_DIR"] = self.output_dir
 
         try:
@@ -192,247 +207,10 @@ class RHMTrainingConfig:
                 "learning_rate": self.learning_rate,
                 "evaluation_strategy": self.evaluation_strategy,
                 "eval_steps": self.eval_steps,
+                "save_strategy": self.save_strategy,
                 "save_steps": self.save_steps,
                 "logging_steps": self.logging_steps,
                 "seed": self.seed,
             }
 
             return TrainingArguments(**minimal_args)
-
-
-def _shuffle_cross_configuration(dataset: Dataset, config: RHMTrainingConfig) -> Dataset:
-    """Shuffle sequences across different configurations before packing."""
-    if not config.shuffle_before_packing:
-        return dataset
-
-    logger.info(f"Shuffling dataset with strategy: {config.shuffle_strategy}")
-
-    if config.shuffle_strategy == "global":
-        # Simple global shuffle
-        indices = list(range(len(dataset)))
-        random.Random(config.shuffle_seed).shuffle(indices)
-        shuffled_dataset = dataset.select(indices)
-        logger.info(f"Applied global shuffle to {len(dataset)} sequences")
-        return shuffled_dataset
-
-    if config.shuffle_strategy == "balanced":
-        # Ensure balanced representation from each config
-        import pandas as pd
-
-        # Convert to pandas for easier grouping
-        df = dataset.to_pandas()
-
-        # Group by configuration
-        groups = df.groupby(["config_L", "config_m"])
-
-        # Shuffle within each group, then interleave
-        shuffled_dfs = []
-        for (L, m), group in groups:
-            group_shuffled = group.sample(frac=1, random_state=config.shuffle_seed).reset_index(drop=True)
-            shuffled_dfs.append(group_shuffled)
-
-        # Interleave groups
-        max_group_size = max(len(df) for df in shuffled_dfs)
-        interleaved_rows = []
-
-        for i in range(max_group_size):
-            for df in shuffled_dfs:
-                if i < len(df):
-                    interleaved_rows.append(df.iloc[i])
-
-        interleaved_df = pd.DataFrame(interleaved_rows).reset_index(drop=True)
-        shuffled_dataset = Dataset.from_pandas(interleaved_df)
-        logger.info(f"Applied balanced shuffle across {len(groups)} configurations")
-        return shuffled_dataset
-
-    if config.shuffle_strategy == "weighted":
-        # Weight shuffling by configuration complexity (L * m)
-        import pandas as pd
-
-        df = dataset.to_pandas()
-        df["complexity"] = df["config_L"] * df["config_m"]
-
-        # Create weights inversely proportional to complexity (more complex = lower weight)
-        max_complexity = df["complexity"].max()
-        df["weight"] = max_complexity / df["complexity"]
-
-        # Sample with weights
-        shuffled_df = df.sample(frac=1, weights="weight", random_state=config.shuffle_seed).reset_index(drop=True)
-        shuffled_dataset = Dataset.from_pandas(shuffled_df.drop(columns=["complexity", "weight"]))
-        logger.info("Applied weighted shuffle based on configuration complexity")
-        return shuffled_dataset
-
-    logger.warning(f"Unknown shuffle strategy: {config.shuffle_strategy}, using global")
-    return _shuffle_cross_configuration(dataset, dataclasses.replace(config, shuffle_strategy="global"))
-
-
-def prepare_packed_dataset(
-    dataset_path: str,
-    tokenizer: RHMTokenizer,
-    config: RHMTrainingConfig,
-    train_split_ratio: float = 0.8,
-    filter_config_L: int | None = None,
-    filter_config_m: int | None = None,
-    max_samples: int | None = None,
-) -> tuple[Dataset, Dataset, dict[str, t.Any]]:
-    """Prepare packed dataset for HuggingFace training with custom tokenizer."""
-    print("=" * 60)
-    print("PREPARING PACKED DATASET WITH CUSTOM TOKENIZER")
-    print("=" * 60)
-
-    # Import here to avoid circular dependencies
-    from ICL.datasets.gen import UnifiedRHMDataset
-
-    # Load unified dataset
-    unified_dataset = UnifiedRHMDataset(dataset_path)
-    dataset = unified_dataset.get_dataset()
-
-    print(f"Original dataset size: {len(dataset):,}")
-
-    # Apply filters if specified
-    if filter_config_L is not None or filter_config_m is not None:
-        dataset = unified_dataset.filter_by_config(L=filter_config_L, m=filter_config_m)
-        print(f"After config filtering: {len(dataset):,}")
-
-    # Limit samples if specified
-    if max_samples is not None and len(dataset) > max_samples:
-        indices = list(range(len(dataset)))
-        random.shuffle(indices)
-        dataset = dataset.select(indices[:max_samples])
-        print(f"After sampling: {len(dataset):,}")
-
-    # NEW: Shuffle sequences across configurations before packing
-    if config.shuffle_before_packing:
-        dataset = _shuffle_cross_configuration(dataset, config)
-        print(f"After cross-configuration shuffling: {len(dataset):,}")
-
-    # Prepare sequences for packing
-    if config.pack_sequences:
-        packed_dataset = _pack_sequences(dataset, tokenizer, config)
-    else:
-        packed_dataset = _prepare_individual_sequences(dataset, tokenizer, config)
-
-    # Split into train/eval
-    split_idx = int(len(packed_dataset) * train_split_ratio)
-    train_dataset = packed_dataset.select(range(split_idx))
-    eval_dataset = packed_dataset.select(range(split_idx, len(packed_dataset)))
-
-    metadata = {
-        "original_size": len(unified_dataset.get_dataset()),
-        "filtered_size": len(dataset),
-        "packed_size": len(packed_dataset),
-        "train_size": len(train_dataset),
-        "eval_size": len(eval_dataset),
-        "packing_enabled": config.pack_sequences,
-        "shuffling_enabled": config.shuffle_before_packing,
-        "shuffle_strategy": config.shuffle_strategy if config.shuffle_before_packing else None,
-        "config": config,
-        "vocab_info": unified_dataset.get_vocab_info(),
-        "tokenizer_vocab_size": tokenizer.vocab_size,
-    }
-
-    print(f"Train dataset: {len(train_dataset):,}")
-    print(f"Eval dataset: {len(eval_dataset):,}")
-    print(f"Tokenizer vocab size: {tokenizer.vocab_size}")
-    print("=" * 60)
-
-    return train_dataset, eval_dataset, metadata
-
-
-def _pack_sequences(dataset: Dataset, tokenizer: RHMTokenizer, config: RHMTrainingConfig) -> Dataset:
-    """Pack multiple sequences into longer training examples."""
-    print("Packing sequences with custom tokenizer...")
-
-    packed_examples = []
-    current_sequence = []
-    current_length = 0
-
-    # Reserve space for special tokens
-    effective_max_length = config.max_sequence_length - 10
-
-    for example in dataset:
-        # Convert RHM sequence to token IDs using tokenizer
-        if "input_ids" in example:
-            sequence = example["input_ids"]
-        elif "sequence" in example:
-            sequence = tokenizer.encode_sequence(example["sequence"])
-        else:
-            continue
-
-        # Skip empty sequences
-        if not sequence:
-            continue
-
-        # If adding this sequence would exceed max length, finalize current packed sequence
-        if current_length + len(sequence) + 1 > effective_max_length and current_sequence:
-            # Add EOS token to end of packed sequence
-            current_sequence.append(tokenizer.eos_token_id)
-            packed_examples.append(
-                {
-                    "input_ids": current_sequence,
-                    "length": len(current_sequence),
-                }
-            )
-            current_sequence = []
-            current_length = 0
-
-        # Add separator if this isn't the first sequence in the pack
-        if current_sequence:
-            current_sequence.append(tokenizer.sep_token_id)
-            current_length += 1
-
-        # Add the sequence
-        current_sequence.extend(sequence)
-        current_length += len(sequence)
-
-    # Add the last packed sequence if it exists
-    if current_sequence:
-        current_sequence.append(tokenizer.eos_token_id)
-        packed_examples.append(
-            {
-                "input_ids": current_sequence,
-                "length": len(current_sequence),
-            }
-        )
-
-    print(f"Packed {len(dataset)} sequences into {len(packed_examples)} training examples")
-    avg_length = sum(ex["length"] for ex in packed_examples) / len(packed_examples)
-    print(f"Average packed sequence length: {avg_length:.1f}")
-
-    return Dataset.from_list(packed_examples)
-
-
-def _prepare_individual_sequences(dataset: Dataset, tokenizer: RHMTokenizer, config: RHMTrainingConfig) -> Dataset:
-    """Prepare individual sequences without packing."""
-    print("Preparing individual sequences with custom tokenizer...")
-
-    examples = []
-    for example in dataset:
-        # Convert RHM sequence to token IDs using tokenizer
-        if "input_ids" in example:
-            sequence = example["input_ids"]
-        elif "sequence" in example:
-            sequence = tokenizer.encode_sequence(example["sequence"])
-        else:
-            continue
-
-        # Skip empty sequences
-        if not sequence:
-            continue
-
-        # Add EOS token
-        sequence.append(tokenizer.eos_token_id)
-
-        # Truncate if too long
-        if len(sequence) > config.max_sequence_length:
-            sequence = sequence[: config.max_sequence_length]
-
-        examples.append(
-            {
-                "input_ids": sequence,
-                "length": len(sequence),
-            }
-        )
-
-    print(f"Prepared {len(examples)} individual sequences")
-    return Dataset.from_list(examples)

@@ -4,6 +4,7 @@
 import argparse
 import json
 import logging
+import re
 import typing as t
 from pathlib import Path
 
@@ -12,7 +13,6 @@ from transformers import set_seed
 from ICL.settings import (
     ModelConfig,
     create_base_parser,
-    get_experiment_config_name,
     load_experiment_config,
     parse_model_config,
     validate_args,
@@ -45,26 +45,57 @@ def create_training_parser() -> argparse.ArgumentParser:
 
 
 def load_model_yaml_config(model_config: ModelConfig) -> dict[str, t.Any]:
-    """Load model-specific YAML configuration from simplified experiment structure."""
+    """Load model-specific YAML configuration from correct path structure."""
+    # Extract L,M from the dataset path
+    paths = model_config.get_model_paths()
+    dataset_path = paths["dataset_dir"]
+
+    try:
+        L, m = extract_L_M_from_dataset_path(dataset_path)
+        logger.info(f"Extracted L={L}, m={m} from dataset path: {dataset_path}")
+    except ValueError as e:
+        logger.error(f"Failed to extract L,M from dataset path: {e}")
+        return {}
+
+    # Load config using the correct L,M values
     config_type = model_config.model_type  # "clm" or "mlm"
-    yaml_config = load_experiment_config(config_type, model_config.dataset_config)
+    yaml_config = load_experiment_config(config_type, model_config.dataset_config, L=L, m=m)
 
     if yaml_config:
-        experiment_name = get_experiment_config_name(
-            model_config.dataset_config.dataset_type,
-            model_config.dataset_config.mixture_type,
-            model_config.dataset_config.total_rules,
-            model_config.dataset_config.seed,
+        logger.info(
+            f"✓ Loaded {config_type} config from conf/{model_config.dataset_config.dataset_type}_{model_config.dataset_config.num_seeds}_L{L}_M{m}/{config_type}.yaml"
         )
-        logger.info(f"Loaded {config_type} config from simplified experiment directory {experiment_name}")
-
-        # Log if dataset_type was auto-added for disambiguation
-        if "_dataset_type" in yaml_config:
-            logger.info(f"Auto-detected dataset_type: {yaml_config['_dataset_type']}")
     else:
-        logger.warning(f"No {config_type} config found for experiment")
+        logger.warning(f"✗ No {config_type} config found for L={L}, m={m}")
 
     return yaml_config
+
+
+def extract_L_M_from_dataset_path(dataset_path: str | Path) -> tuple[int, int]:
+    """Extract L and M values from dataset directory path.
+
+    Args:
+        dataset_path: Path like datasets/uniform_10_L4_M2/train/
+
+    Returns:
+        tuple: (L, m) values
+
+    """
+    dataset_path = Path(dataset_path)
+
+    # Look for pattern in the dataset directory name
+    pattern = r".*_L(\d+)_M(\d+)"
+
+    # Check the parent directory name (remove /train/ suffix)
+    dir_name = dataset_path.parent.name if dataset_path.name == "train" else dataset_path.name
+
+    match = re.search(pattern, dir_name)
+    if match:
+        L = int(match.group(1))
+        m = int(match.group(2))
+        return L, m
+
+    raise ValueError(f"Could not extract L,M from dataset path: {dataset_path}")
 
 
 def load_yaml_overrides(config_path: str | Path | None) -> dict[str, t.Any]:
