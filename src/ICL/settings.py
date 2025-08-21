@@ -1,5 +1,6 @@
 import argparse
 import dataclasses as _dataclasses
+import logging
 import os as _os
 import socket as _socket
 import typing as t
@@ -10,6 +11,7 @@ from pathlib import Path as _Path
 
 import yaml
 
+logger = logging.getLogger(__name__)
 #################################
 # Path settings
 
@@ -82,42 +84,40 @@ def get_experiment_config_name(dataset_type: str, mixture_type: str, total_rules
     return f"{mixture_type}_{total_rules}_{seed}"
 
 
-def load_experiment_config(
-    config_type: str, dataset_config: "DatasetConfig", L: int | None = None, m: int | None = None
-) -> dict[str, t.Any]:
-    """Load configuration from experiment-specific config structure.
+def load_experiment_config(config_type: str, dataset_config: "DatasetConfig", L: int, m: int) -> dict[str, t.Any]:
+    """Load configuration from correct path structure.
 
     Args:
-        config_type: Type of config to load
+        config_type: Type of config to load ("clm", "mlm", etc.)
         dataset_config: Dataset configuration
-        L: Hierarchy depth (required for per-config loading)
-        m: Multiplicity (required for per-config loading)
+        L: Hierarchy depth (required)
+        m: Multiplicity (required)
 
     """
     valid_types = ["train_dataset", "eval_dataset", "clm", "mlm", "collection"]
     if config_type not in valid_types:
         raise ValueError(f"Invalid config type: {config_type}. Must be one of {valid_types}")
 
-    if L is None or m is None:
-        raise ValueError("L and m parameters are required for configuration loading")
-
     # Build config directory path: conf/{dataset_type}_{num_seeds}_L{L}_M{m}/
     config_dir_name = f"{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{L}_M{m}"
     config_path = PATH.conf_dir / config_dir_name / f"{config_type}.yaml"
 
+    logger.info(f"Loading config from: {config_path}")
+
     if not config_path.exists():
-        _warnings.warn(f"Configuration file not found: {config_path}")
+        logger.warning(f"Configuration file not found: {config_path}")
         return {}
 
     try:
         with config_path.open("r", encoding="utf-8") as file:
             config_data = yaml.safe_load(file) or {}
+            logger.info(f"✓ Successfully loaded {config_type} configuration")
             return config_data
     except yaml.YAMLError as e:
-        _warnings.warn(f"Error parsing YAML config {config_path}: {e}")
+        logger.error(f"Error parsing YAML config {config_path}: {e}")
         return {}
     except Exception as e:
-        _warnings.warn(f"Unexpected error loading config {config_path}: {e}")
+        logger.error(f"Unexpected error loading config {config_path}: {e}")
         return {}
 
 
