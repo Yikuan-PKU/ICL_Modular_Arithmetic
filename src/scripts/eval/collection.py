@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+from ICL.eval.collection.collection_config import CollectionConfig
+from ICL.eval.collection.coordinator import CollectionCoordinator
 from ICL.settings import create_base_parser, parse_dataset_config
 
 
@@ -28,8 +30,6 @@ def create_collection_parser():
 
 def create_collection_config_from_args(args):
     """Create CollectionConfig from parsed arguments using auto-discovery."""
-    from ICL.eval.collection.collection_config import CollectionConfig
-
     dataset_config = parse_dataset_config(args)
     # Force eval=True for collection
     dataset_config = dataset_config.__class__(
@@ -83,8 +83,6 @@ def main() -> int:
 
     # Handle utility commands
     if args.list_checkpoints:
-        from ICL.eval.collection.coordinator import CollectionCoordinator
-
         coordinator = CollectionCoordinator(config)
 
         checkpoint_info = coordinator.list_discovered_checkpoints()
@@ -118,7 +116,6 @@ def main() -> int:
         return 0
 
     # Initialize coordinator
-    from ICL.eval.collection.coordinator import CollectionCoordinator
 
     coordinator = CollectionCoordinator(config)
 
