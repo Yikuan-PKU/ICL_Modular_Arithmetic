@@ -5,7 +5,7 @@ rhm_params:
   vocab_size: 32
   num_classes: 2
   tuple_size: 2
-  samples_per_config: 1000  # Number of samples per seed for this (L,M) configuration
+  samples_per_config: -1  # Number of samples per seed for this (L,M) configuration
 
 # Distribution type for rule sampling
 distribution:
