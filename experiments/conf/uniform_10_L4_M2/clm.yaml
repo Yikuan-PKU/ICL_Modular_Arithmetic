@@ -43,7 +43,9 @@ metric_for_best_model: "eval_loss"
 
 # Epoch-based evaluation (UPDATED)
 evaluation_strategy: "epoch"
-eval_steps: 1  # Evaluate every epoch
+eval_steps: 1
+
+  # Evaluate every epoch
 
 # Logging
 logging_strategy: "steps"

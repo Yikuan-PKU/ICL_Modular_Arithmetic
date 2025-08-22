@@ -50,7 +50,7 @@ if [ -f "$SCRIPT_ROOT/generate_eval.py" ]; then
     # 只运行验证步骤进行测试
     python $SCRIPT_ROOT/generate_eval.py --help
 else
-    echo "错误: 找不到脚本文件 $SCRIPT_ROOT/generate_raw.py"
+    echo "错误: 找不到脚本文件 $SCRIPT_ROOT/generate_eval.py"
     exit 1
 fi
 

@@ -36,7 +36,7 @@ eval_config:
   ood_same_rule:
     enable: true                     # Enable OOD same rule evaluation
     num_ood_seeds: 3                 # Number of new seeds to generate
-    ood_seed_offset: 100000          # Seed offset to avoid training seeds
+    ood_seed_offset: 100000         # Seed offset to avoid training seeds
     sequences_per_seed: 200          # Sequences to generate per new seed
     min_sequences_per_seed: 50       # Minimum sequences per seed
 

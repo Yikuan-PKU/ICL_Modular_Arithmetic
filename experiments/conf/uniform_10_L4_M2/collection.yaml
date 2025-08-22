@@ -7,9 +7,9 @@
 base_config:
   # Evaluation types to process (auto-discovered from datasets/uniform_10_L4_M2/eval/)
   evaluation_types:
-    - "memorization"
-    - "id_generalization" 
-    - "ood_same_rule"
+    # - "memorization"
+    # - "id_generalization" 
+    # - "ood_same_rule"
     - "ood_transfer"
   
   # Model variants auto-discovered from existing config files:
@@ -20,7 +20,7 @@ base_config:
 # Collection-specific parameters (not in model configs)
 collection_config:
   # Memory management - control attention data collection
-  capture_attention: true
+  capture_attention: false
   
   # Evaluation parameters
   evaluation_parameters:
