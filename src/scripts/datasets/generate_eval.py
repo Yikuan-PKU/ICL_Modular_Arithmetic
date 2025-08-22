@@ -42,56 +42,11 @@ def create_icl_eval_parser():
     return parser
 
 
-def discover_available_configurations(dataset_config: DatasetConfig) -> list[tuple[int, int]]:
-    """Discover available (L,M) configurations with train/validation splits."""
-    import re
-
-    from ICL.settings import PATH
-
-    # Look for existing split datasets
-    pattern = rf"{dataset_config.dataset_type}_{dataset_config.num_seeds}_L(\d+)_M(\d+)"
-    configurations = []
-
-    datasets_dir = PATH.dataset_root
-    if not datasets_dir.exists():
-        raise FileNotFoundError(f"Datasets directory not found: {datasets_dir}")
-
-    for dataset_dir in datasets_dir.iterdir():
-        if dataset_dir.is_dir():
-            match = re.match(pattern, dataset_dir.name)
-            if match:
-                L, m = int(match.group(1)), int(match.group(2))
-
-                # Check if train and validation splits exist
-                train_dir = dataset_dir / "train"
-                val_dir = dataset_dir / "validation"
-
-                if train_dir.exists() and val_dir.exists():
-                    # Verify they have seed directories
-                    train_seeds = any(
-                        (train_dir / item).is_dir() and item.name.startswith("seed_") for item in train_dir.iterdir()
-                    )
-                    val_seeds = any(
-                        (val_dir / item).is_dir() and item.name.startswith("seed_") for item in val_dir.iterdir()
-                    )
-
-                    if train_seeds and val_seeds:
-                        configurations.append((L, m))
-                        logger.info(f"Found split data for L={L}, m={m}")
-
-    if not configurations:
-        raise FileNotFoundError(
-            f"No split datasets found matching pattern: {pattern}\nPlease run train/validation splitting first."
-        )
-
-    return sorted(configurations)
-
-
-def load_eval_config_for_LM(dataset_config: DatasetConfig, L: int, m: int) -> t.Any:
-    """Load ICL evaluation configuration for specific (L,M) configuration."""
+def load_eval_config(dataset_config: DatasetConfig) -> t.Any:
+    """Load ICL evaluation configuration for the specified L,M configuration."""
     import yaml
 
-    paths = dataset_config.get_config_paths(L, m)
+    paths = dataset_config.get_config_paths(dataset_config.L, dataset_config.m)
     config_path = paths["config_dir"] / "generate_eval.yaml"
 
     if not config_path.exists():
@@ -108,24 +63,23 @@ def load_eval_config_for_LM(dataset_config: DatasetConfig, L: int, m: int) -> t.
 
 
 def generate_evaluation_for_configuration(
-    L: int,
-    m: int,
     dataset_config: DatasetConfig,
     enable_types: list[str] | None = None,
     skip_existing: bool = False,
     overwrite: bool = False,
 ) -> bool:
-    """Generate ICL evaluation datasets for a single (L,M) configuration.
+    """Generate ICL evaluation datasets for the specified L,M configuration.
 
     Returns:
         True if successful, False if skipped or failed
 
     """
+    L, m = dataset_config.L, dataset_config.m
     logger.info(f"Processing L={L}, m={m}")
 
     # Get paths for this configuration
     paths = dataset_config.get_config_paths(L, m)
-    base_dir = paths["dataset_dir"].parent  # Remove /train to get base
+    base_dir = paths["dataset_dir"].parent  # Remove /raw to get base
 
     # Initialize directory manager
     dir_manager = EvalDirectoryManager(base_dir)
@@ -145,7 +99,7 @@ def generate_evaluation_for_configuration(
         return True
 
     # Load configuration
-    eval_config = load_eval_config_for_LM(dataset_config, L, m)
+    eval_config = load_eval_config(dataset_config)
 
     # Override enabled types if specified
     if enable_types:
@@ -211,89 +165,87 @@ def main():
     # Validate arguments
     validate_args(args)
 
-    # Convert to dataset config
+    # Convert to dataset config (L,M now come from command line)
     dataset_config = parse_dataset_config(args)
 
-    # Discover available configurations
-    try:
-        configurations = discover_available_configurations(dataset_config)
-    except FileNotFoundError as e:
-        logger.error(f"Error: {e}")
-        return 1
+    # Log the configuration
+    logger.info(f"Dataset configuration: {dataset_config.to_name()}")
+    logger.info(f"Using L={dataset_config.L}, m={dataset_config.m} from command line")
 
     if args.validate_only:
         logger.info(f"Validation successful for {dataset_config.to_name()}")
-        logger.info(f"Found {len(configurations)} configurations with train/validation splits:")
 
-        for L, m in configurations:
-            logger.info(f"  L={L}, m={m}")
-
-            # Check prerequisites for each
-            paths = dataset_config.get_config_paths(L, m)
+        # Check prerequisites
+        try:
+            paths = dataset_config.get_config_paths(dataset_config.L, dataset_config.m)
             base_dir = paths["dataset_dir"].parent
             prereq_results = check_evaluation_prerequisites(base_dir)
 
+            logger.info(f"Configuration: L={dataset_config.L}, m={dataset_config.m}")
+
             if prereq_results["ready_for_evaluation"]:
                 logger.info("    ✓ Ready for evaluation")
+
+                # Check if config file exists
+                try:
+                    eval_config = load_eval_config(dataset_config)
+                    enabled_types = eval_config.get_enabled_types()
+                    logger.info(f"    ✓ Config file found, enabled types: {enabled_types}")
+                except FileNotFoundError as e:
+                    logger.warning(f"    ⚠ Config file issue: {e}")
+
             else:
                 missing = [k for k, v in prereq_results.items() if not v and k.endswith("_exists")]
-                logger.info(f"    ✗ Missing: {missing}")
+                logger.error(f"    ✗ Missing: {missing}")
+                return 1
+
+        except Exception as e:
+            logger.error(f"Validation error: {e}")
+            return 1
 
         return 0
 
     if args.verbose:
         logger.info(f"Dataset: {dataset_config.to_name()}")
-        logger.info(f"Configurations to process: {configurations}")
+        logger.info(f"Configuration: L={dataset_config.L}, m={dataset_config.m}")
         if args.enable_types:
             logger.info(f"Enabled types override: {args.enable_types}")
         logger.info(f"Skip existing: {args.skip_existing}")
         logger.info(f"Overwrite: {args.overwrite}")
 
-    # Process each configuration
-    total_configs = len(configurations)
-    successful_configs = 0
-    failed_configs = []
-
+    # Process the configuration
     logger.info(f"\n{'=' * 60}")
     logger.info("STARTING ICL EVALUATION GENERATION")
     logger.info(f"{'=' * 60}")
+    logger.info(f"Processing configuration: L={dataset_config.L}, m={dataset_config.m}")
+    logger.info("-" * 40)
 
-    for config_idx, (L, m) in enumerate(configurations, 1):
-        logger.info(f"\nProcessing configuration {config_idx}/{total_configs}: L={L}, m={m}")
-        logger.info("-" * 40)
+    try:
+        success = generate_evaluation_for_configuration(
+            dataset_config,
+            enable_types=args.enable_types,
+            skip_existing=args.skip_existing,
+            overwrite=args.overwrite,
+        )
 
-        try:
-            success = generate_evaluation_for_configuration(
-                L,
-                m,
-                dataset_config,
-                enable_types=args.enable_types,
-                skip_existing=args.skip_existing,
-                overwrite=args.overwrite,
-            )
+        if success:
+            logger.info(f"\n{'=' * 60}")
+            logger.info("ICL EVALUATION GENERATION COMPLETE")
+            logger.info(f"{'=' * 60}")
+            return 0
+        logger.error("ICL EVALUATION GENERATION FAILED")
+        return 1
 
-            if success:
-                successful_configs += 1
-            else:
-                failed_configs.append((L, m, "Generation failed"))
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        return 130
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        if args.verbose:
+            import traceback
 
-        except KeyboardInterrupt:
-            logger.info("Interrupted by user")
-            break
-        except Exception as e:
-            logger.error(f"Unexpected error for L={L}, m={m}: {e}")
-            failed_configs.append((L, m, str(e)))
-            if args.verbose:
-                import traceback
-
-                traceback.print_exc()
-            continue
-
-    # Final summary
-    logger.info(f"\n{'=' * 60}")
-    logger.info("ICL EVALUATION GENERATION COMPLETE")
-
-    return 0 if successful_configs > 0 else 1
+            traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":

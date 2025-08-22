@@ -1,5 +1,7 @@
 # config/uniform_10_L4_M2/clm.yaml
 # CLM-specific training configuration with seed-aware batching
+L: 4
+M: 2
 
 # Model architecture
 vocab_size: 37

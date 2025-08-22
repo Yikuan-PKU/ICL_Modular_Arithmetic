@@ -2,7 +2,6 @@ import argparse
 import dataclasses as _dataclasses
 import logging
 import os as _os
-import re
 import socket as _socket
 import typing as t
 import warnings as _warnings
@@ -134,26 +133,14 @@ def get_dataset_subdir(is_eval: bool) -> str:
 
 @dataclass(frozen=True)
 class DatasetConfig:
-    """Model-agnostic dataset identification with L,M auto-discovery."""
+    """Model-agnostic dataset identification with required L,M values."""
 
     dataset_type: str  # uniform, zipf
     seed: int  # RNG seed for generating random seeds
     num_seeds: int  # Number of random seeds to generate
+    L: int  # Hierarchy depth
+    m: int  # Multiplicity
     is_eval: bool = False
-    L: int | None = None  # Will be auto-discovered if None
-    m: int | None = None  # Will be auto-discovered if None
-
-    def __post_init__(self):
-        """Auto-discover L,M if not provided."""
-        if self.L is None or self.m is None:
-            # Use object.__setattr__ because this is a frozen dataclass
-            L, m = get_default_L_M_config(self.dataset_type, self.num_seeds)
-            if self.L is None:
-                object.__setattr__(self, "L", L)
-            if self.m is None:
-                object.__setattr__(self, "m", m)
-
-            logger.info(f"Auto-discovered dataset configuration: L={self.L}, m={self.m}")
 
     def to_name(self) -> str:
         """Generate full dataset name including L,M."""
@@ -176,28 +163,13 @@ class DatasetConfig:
             "base_dataset_dir": PATH.dataset_root / base_name,
         }
 
-    def validate_config(self) -> bool:
-        """Validate that this configuration exists in the filesystem."""
-        return validate_L_M_config(self.dataset_type, self.num_seeds, self.L, self.m)
-
-    def get_available_configs(self) -> list[tuple[int, int]]:
-        """Get all available (L,M) configurations for this dataset type."""
-        return discover_available_L_M_configs(self.dataset_type, self.num_seeds)
-
-    @classmethod
-    def create_with_L_M(cls, dataset_type: str, seed: int, num_seeds: int, L: int, m: int, is_eval: bool = False):
-        """Create DatasetConfig with explicit L,M values."""
-        return cls(dataset_type=dataset_type, seed=seed, num_seeds=num_seeds, L=L, m=m, is_eval=is_eval)
-
-    def get_base_paths(self) -> dict[str, Path]:
-        """Generate base dataset paths (without L,M specification)."""
-        return {
-            "base_dataset_dir": PATH.dataset_root,
-            # Note: config_dir is per (L,M) configuration, not shared
-        }
-
     def get_config_paths(self, L: int, m: int) -> dict[str, Path]:
-        """Generate dataset-specific paths for a given (L,M) configuration."""
+        """Generate dataset-specific paths for a given (L,M) configuration.
+
+        Note: L,M parameters kept for backward compatibility but will use self.L, self.m
+        """
+        # Use instance L,M values instead of parameters
+        L, m = self.L, self.m
         subdir = get_dataset_subdir(self.is_eval)
 
         # Main directory name includes dataset_type, num_seeds, L, and M
@@ -213,14 +185,10 @@ class DatasetConfig:
             "base_dataset_dir": PATH.dataset_root / config_dir_name,
         }
 
-    def get_all_config_dirs(self, L_M_pairs: list[tuple[int, int]]) -> dict[tuple[int, int], dict[str, Path]]:
-        """Generate paths for all (L,M) configurations."""
-        return {(L, m): self.get_config_paths(L, m) for L, m in L_M_pairs}
-
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Model-specific training identification with automatic L,M discovery."""
+    """Model-specific training identification with explicit L,M values."""
 
     dataset_config: DatasetConfig
     model_type: str
@@ -253,22 +221,6 @@ class ModelConfig:
         # Since model_dir is now the base path, results should also follow the enhanced naming
         paths["results_dir"] = PATH.result_dir / result_name
         return paths
-
-    def validate_config(self) -> bool:
-        """Validate that the dataset configuration exists."""
-        return self.dataset_config.validate_config()
-
-    def get_available_dataset_configs(self) -> list[tuple[int, int]]:
-        """Get all available (L,M) configurations for this dataset."""
-        return self.dataset_config.get_available_configs()
-
-    @classmethod
-    def create_with_L_M(cls, dataset_type: str, model_type: str, seed: int, num_seeds: int, L: int, m: int):
-        """Create ModelConfig with explicit L,M values."""
-        dataset_config = DatasetConfig.create_with_L_M(
-            dataset_type=dataset_type, seed=seed, num_seeds=num_seeds, L=L, m=m, is_eval=False
-        )
-        return cls(dataset_config=dataset_config, model_type=model_type)
 
 
 # Backward compatibility
@@ -306,10 +258,8 @@ class ExperimentConfig:
 # Argument parser
 
 
-def create_base_parser(
-    require_eval_flag: bool = False, require_model_type: bool = False, allow_L_M_override: bool = False
-) -> argparse.ArgumentParser:
-    """Create minimal shared parser for dataset generation."""
+def create_base_parser(require_eval_flag: bool = False, require_model_type: bool = False) -> argparse.ArgumentParser:
+    """Create minimal shared parser for dataset generation with required L,M arguments."""
     parser = argparse.ArgumentParser(add_help=False)
 
     # Dataset identification
@@ -324,6 +274,10 @@ def create_base_parser(
         "--num-seeds", type=int, default=1, help="Number of random seeds to generate (default: 1)"
     )
 
+    # L,M are now required arguments for all scripts
+    dataset_group.add_argument("--L", type=int, required=True, help="Hierarchy depth (required)")
+    dataset_group.add_argument("--M", type=int, required=True, help="Multiplicity (required)")
+
     # Add eval flag if required
     if require_eval_flag:
         dataset_group.add_argument(
@@ -337,16 +291,6 @@ def create_base_parser(
             "--model-type", choices=["clm", "mlm"], required=True, help="Type of model to train (CLM or MLM)"
         )
 
-    # Add L,M override options if requested
-    if allow_L_M_override:
-        hierarchy_group = parser.add_argument_group("Hierarchy Override (Optional)")
-        hierarchy_group.add_argument(
-            "--L", type=int, help="Override hierarchy depth L (will auto-discover if not specified)"
-        )
-        hierarchy_group.add_argument(
-            "--M", type=int, help="Override multiplicity M (will auto-discover if not specified)"
-        )
-
     # Pipeline control (optional for all scripts)
     control_group = parser.add_argument_group("Pipeline Control")
     control_group.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs")
@@ -357,23 +301,21 @@ def create_base_parser(
 
 
 def parse_dataset_config(args: argparse.Namespace) -> DatasetConfig:
-    """Convert parsed arguments to DatasetConfig with L,M auto-discovery."""
+    """Convert parsed arguments to DatasetConfig with explicit L,M values."""
     is_eval = getattr(args, "eval", False)
-    L = getattr(args, "L", None)
-    m = getattr(args, "M", None)
 
     return DatasetConfig(
         dataset_type=args.dataset_type,
         seed=args.seed,
         num_seeds=args.num_seeds,
+        L=args.L,
+        m=args.M,
         is_eval=is_eval,
-        L=L,
-        m=m,
     )
 
 
 def parse_model_config(args: argparse.Namespace) -> ModelConfig:
-    """Convert parsed arguments to ModelConfig with L,M auto-discovery."""
+    """Convert parsed arguments to ModelConfig with explicit L,M values."""
     dataset_config = parse_dataset_config(args)
     return ModelConfig(
         dataset_config=dataset_config,
@@ -391,117 +333,11 @@ def validate_args(args: argparse.Namespace) -> bool:
     if args.num_seeds < 1:
         raise ValueError("num_seeds must be at least 1")
 
-    # Validate L,M if provided
-    L = getattr(args, "L", None)
-    M = getattr(args, "M", None)
-
-    if (L is None) != (M is None):
-        raise ValueError("Both --L and --M must be specified together, or neither")
-
-    if L is not None and L < 1:
+    # Validate L,M (now always required)
+    if args.L < 1:
         raise ValueError("L must be at least 1")
 
-    if M is not None and M < 1:
+    if args.M < 1:
         raise ValueError("M must be at least 1")
 
     return True
-
-
-#################################
-# Helper func in parsing l and m
-
-
-def discover_available_L_M_configs(dataset_type: str, num_seeds: int) -> list[tuple[int, int]]:
-    """Discover available (L,M) configurations for a dataset.
-
-    Args:
-        dataset_type: Type of dataset (uniform, zipf)
-        num_seeds: Number of seeds
-
-    Returns:
-        List of (L, M) tuples found in the filesystem
-
-    """
-    base_pattern = f"{dataset_type}_{num_seeds}"
-    configs = []
-
-    # Look for directories matching pattern: {dataset_type}_{num_seeds}_L*_M*
-    dataset_root = PATH.dataset_root
-    if not dataset_root.exists():
-        logger.warning(f"Dataset root does not exist: {dataset_root}")
-        return []
-
-    pattern = re.compile(rf"^{re.escape(base_pattern)}_L(\d+)_M(\d+)$")
-
-    for item in dataset_root.iterdir():
-        if item.is_dir():
-            match = pattern.match(item.name)
-            if match:
-                L = int(match.group(1))
-                M = int(match.group(2))
-
-                # Verify that train subdirectory exists
-                train_dir = item / "train"
-                if train_dir.exists():
-                    configs.append((L, M))
-                    logger.debug(f"Found dataset config: L={L}, M={M} at {item}")
-                else:
-                    logger.warning(f"Found directory {item.name} but no train subdirectory")
-
-    # Sort by L, then M for consistent ordering
-    configs.sort()
-
-    if configs:
-        logger.info(f"Discovered {len(configs)} dataset configurations for {base_pattern}: {configs}")
-    else:
-        logger.warning(f"No dataset configurations found for {base_pattern}")
-
-    return configs
-
-
-def get_default_L_M_config(dataset_type: str, num_seeds: int) -> tuple[int, int]:
-    """Get the default (L,M) configuration for a dataset.
-
-    This will use the first available configuration, or fall back to (4,2) if none found.
-
-    Args:
-        dataset_type: Type of dataset
-        num_seeds: Number of seeds
-
-    Returns:
-        (L, M) tuple
-
-    """
-    available_configs = discover_available_L_M_configs(dataset_type, num_seeds)
-
-    if available_configs:
-        L, M = available_configs[0]
-        logger.info(f"Using default L={L}, M={M} configuration for {dataset_type}_{num_seeds}")
-        return L, M
-    # Fallback default
-    logger.warning(f"No configurations found for {dataset_type}_{num_seeds}, using fallback L=4, M=2")
-    return 4, 2
-
-
-def validate_L_M_config(dataset_type: str, num_seeds: int, L: int, M: int) -> bool:
-    """Validate that a specific (L,M) configuration exists.
-
-    Args:
-        dataset_type: Type of dataset
-        num_seeds: Number of seeds
-        L: Hierarchy depth
-        M: Multiplicity
-
-    Returns:
-        True if configuration exists, False otherwise
-
-    """
-    config_name = f"{dataset_type}_{num_seeds}_L{L}_M{M}"
-    dataset_dir = PATH.dataset_root / config_name
-    train_dir = dataset_dir / "train"
-
-    exists = train_dir.exists()
-    if not exists:
-        logger.error(f"Dataset configuration {config_name} not found at {train_dir}")
-
-    return exists

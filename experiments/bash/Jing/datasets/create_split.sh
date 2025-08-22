@@ -13,12 +13,14 @@ SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/datasets"
 DATASET_TYPE="uniform"      # Options: uniform, zipf
 RNG_SEED=42                # Seed for generating random seeds (for reproducibility)
 NUM_SEEDS=10                # Number of random seeds to generate
+L=4
+M=2
 
 # Pipeline control flags
 PIPELINE_ARGS="--verbose --overwrite"  # Options: --verbose, --overwrite, --resume
 
 # Construct command arguments
-SHARED_ARGS="--dataset-type $DATASET_TYPE --seed $RNG_SEED --num-seeds $NUM_SEEDS"
+SHARED_ARGS="--dataset-type $DATASET_TYPE --seed $RNG_SEED --num-seeds $NUM_SEEDS --L $L --M $M"
 
 # =============================================================================
 # GENERATION STEPS

@@ -23,12 +23,40 @@ PIPELINE_ARGS="--verbose --overwrite"  # Options: --verbose, --overwrite, --resu
 SHARED_ARGS="--dataset-type $DATASET_TYPE --seed $RNG_SEED --num-seeds $NUM_SEEDS --L $L --M $M"
 
 # =============================================================================
-# GENERATION STEPS
+# GENERATING RAW DATASET
 # =============================================================================
-
+echo "============== Generating RAW DATA =============="
 # Step 1: Validate configuration (optional but recommended)
 echo "Step 1: Validating configuration..."
 python $SCRIPT_ROOT/generate_raw.py $SHARED_ARGS --validate-only
 
 echo "Step 2: Running generation..."
 python $SCRIPT_ROOT/generate_raw.py $SHARED_ARGS $PIPELINE_ARGS
+
+
+
+# =============================================================================
+# SPLIT STEPS
+# =============================================================================
+
+echo "============== SPLITTING DATA =============="
+# Step 1: Validate configuration (optional but recommended)
+echo "Step 1: Validating configuration..."
+python $SCRIPT_ROOT/create_split.py $SHARED_ARGS --validate-only
+
+echo "Step 2: Running splitting..."
+python $SCRIPT_ROOT/create_split.py $SHARED_ARGS $PIPELINE_ARGS
+
+
+
+# =============================================================================
+# GENERATING EVAL TASK
+# =============================================================================
+
+echo "============== GENERATING EVAL TASKS =============="
+# Step 1: Validate configuration (optional but recommended)
+echo "Step 1: Validating configuration..."
+python $SCRIPT_ROOT/generate_eval.py $SHARED_ARGS --validate-only
+
+echo "Step 2: Running splitting..."
+python $SCRIPT_ROOT/generate_eval.py $SHARED_ARGS $PIPELINE_ARGS
