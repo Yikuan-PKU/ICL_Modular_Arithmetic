@@ -144,8 +144,7 @@ class CollectionEvaluator:
                 "appears_in_training": self._determine_training_appearance(example, self.config.eval_type),
                 "source_seeds": example.get("source_seeds", []),
                 # Target configuration
-                # "target_config_L": example.get("target_config_L", self.config.config_L),
-                # "target_config_m": example.get("target_config_m", self.config.config_m),
+                # ! put dummy code here as we do NOT use it
                 "target_config_L": example.get(4, self.config.config_L),
                 "target_config_m": example.get(2, self.config.config_m),
             }
