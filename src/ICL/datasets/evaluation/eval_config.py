@@ -12,13 +12,53 @@ class ICLParams:
     max_sequence_length: int | None = None
     min_sequence_length: int | None = None
 
-    def __post_init__(self):
-        """Validate ICL parameters."""
-        if not self.context_sizes or min(self.context_sizes) < 1:
-            raise ValueError("context_sizes must contain positive integers")
+    # def __post_init__(self):
+    #     """Validate ICL parameters."""
+    #     if not self.context_sizes or min(self.context_sizes) < 1:
+    #         raise ValueError("context_sizes must contain positive integers")
 
-        if self.sequences_per_context_size <= 0:
-            raise ValueError("sequences_per_context_size must be positive")
+    #     if self.sequences_per_context_size <= 0:
+    #         raise ValueError("sequences_per_context_size must be positive")
+
+    def __post_init__(self):
+        """Initialize paths and load configuration using explicit L,M,model_type."""
+        print(f"DEBUG __post_init__: Starting with model_type: '{self.model_type}'")
+
+        # Validate that L,M,model_type are explicitly provided
+        if self.config_L is None or self.config_m is None:
+            raise ValueError("config_L and config_m must be explicitly provided - no auto-discovery")
+
+        if not self.model_type:
+            raise ValueError("model_type must be explicitly provided from bash script")
+
+        # Validate L,M values
+        if self.config_L < 1:
+            raise ValueError(f"config_L must be >= 1, got {self.config_L}")
+        if self.config_m < 1:
+            raise ValueError(f"config_m must be >= 1, got {self.config_m}")
+
+        # Validate model_type
+        if self.model_type not in ["clm", "mlm"]:
+            raise ValueError(f"model_type must be 'clm' or 'mlm', got '{self.model_type}'")
+
+        print(f"DEBUG __post_init__: After validation, model_type: '{self.model_type}'")
+
+        # Auto-generate model_variant if not provided
+        if not self.model_variant and not self.batch_mode:
+            print("DEBUG __post_init__: Generating model_variant from training.yaml")
+            self.model_variant = self._generate_model_variant_from_training_yaml()
+
+        # Discover paths using explicit L,M
+        if not self.eval_dataset_path:
+            print("DEBUG __post_init__: Discovering paths")
+            self._discover_paths()
+
+        # Load collection configuration
+        if not self.available_evaluation_types:
+            print("DEBUG __post_init__: Loading collection config")
+            self._load_collection_config()
+
+        print(f"DEBUG __post_init__: Finished, model_type: '{self.model_type}'")
 
 
 @dataclass

@@ -1,4 +1,4 @@
-"""Enhanced evaluator with minimal model config integration."""
+"""Enhanced evaluator with explicit L,M values - no auto-discovery."""
 
 import json
 import logging
@@ -64,11 +64,19 @@ class CollectionProgress:
 
 
 class CollectionEvaluator:
-    """Enhanced evaluator with minimal model config integration."""
+    """Enhanced evaluator with explicit L,M values - no auto-discovery."""
 
     def __init__(self, config):
-        """Initialize enhanced evaluator."""
+        """Initialize enhanced evaluator with explicit L,M validation."""
         self.config = config
+
+        # Validate that config has explicit L,M values
+        if not hasattr(config, "config_L") or not hasattr(config, "config_m"):
+            raise ValueError("Config must have explicit config_L and config_m values")
+
+        if config.config_L is None or config.config_m is None:
+            raise ValueError("config_L and config_m cannot be None - must be explicit from bash script")
+
         self.config.validate()
         self.config.create_output_structure()
 
@@ -102,17 +110,19 @@ class CollectionEvaluator:
         )
 
         logger.info(f"Collection evaluator initialized. Logs: {log_file}")
+        logger.info(f"Using explicit L={self.config.config_L}, M={self.config.config_m}")
 
     def load_evaluation_dataset(self) -> dict[str, t.Any]:
-        """Load HuggingFace evaluation dataset and convert to internal format."""
+        """Load HuggingFace evaluation dataset and convert to internal format using explicit L,M."""
         logger.info(f"Loading evaluation dataset from {self.config.eval_dataset_path}")
+        logger.info(f"Using explicit L={self.config.config_L}, M={self.config.config_m}")
 
         from datasets import load_from_disk
 
         # Load HuggingFace dataset
         hf_dataset = load_from_disk(str(self.config.eval_dataset_path))
 
-        # Convert to internal JSON format
+        # Convert to internal JSON format using explicit L,M
         converted_dataset = self._convert_hf_to_internal_format(hf_dataset)
 
         self.evaluation_dataset = converted_dataset
@@ -122,11 +132,12 @@ class CollectionEvaluator:
         logger.info(
             f"Loaded evaluation dataset with {total_sequences} sequences for eval_type: {self.config.eval_type}"
         )
+        logger.info(f"Target config: L={self.config.config_L}, M={self.config.config_m} (explicit)")
 
         return converted_dataset
 
     def _convert_hf_to_internal_format(self, hf_dataset) -> dict[str, t.Any]:
-        """Convert HuggingFace dataset to internal JSON format."""
+        """Convert HuggingFace dataset to internal JSON format using explicit L,M."""
         # Group sequences by context size for easier access
         sequences_by_k = defaultdict(list)
 
@@ -143,27 +154,27 @@ class CollectionEvaluator:
                 "eval_type": self.config.eval_type,
                 "appears_in_training": self._determine_training_appearance(example, self.config.eval_type),
                 "source_seeds": example.get("source_seeds", []),
-                # Target configuration
-                # ! put dummy code here as we do NOT use it
-                "target_config_L": example.get(4, self.config.config_L),
-                "target_config_m": example.get(2, self.config.config_m),
+                # Target configuration using EXPLICIT L,M from config (no auto-discovery)
+                "target_config_L": example.get("target_config_L", self.config.config_L),
+                "target_config_m": example.get("target_config_m", self.config.config_m),
             }
 
             context_size = sequence["context_size"]
             sequences_by_k[context_size].append(sequence)
 
-        # Create internal format
+        # Create internal format with explicit L,M metadata
         converted_dataset = {
             "metadata": {
                 "dataset_type": self.config.dataset_type,
                 "num_seeds": self.config.num_seeds,
                 "seed": self.config.seed,
-                "config_L": self.config.config_L,
-                "config_m": self.config.config_m,
+                "config_L": self.config.config_L,  # EXPLICIT
+                "config_m": self.config.config_m,  # EXPLICIT
                 "eval_type": self.config.eval_type,
                 "model_variant": self.config.model_variant,
                 "total_sequences": len(hf_dataset),
                 "conversion_timestamp": datetime.now().isoformat(),
+                "explicit_config": True,  # Flag indicating explicit L,M usage
             },
             "sequences": dict(sequences_by_k),
         }
@@ -180,8 +191,9 @@ class CollectionEvaluator:
         return example.get("appears_in_training", False)
 
     def discover_and_validate_checkpoints(self) -> list[ModelMetadata]:
-        """Discover and validate checkpoints for the model variant."""
+        """Discover and validate checkpoints for the model variant using explicit L,M."""
         logger.info(f"Discovering checkpoints for model variant: {self.config.model_variant}")
+        logger.info(f"Using explicit L={self.config.config_L}, M={self.config.config_m}")
 
         all_metadata = self.checkpoint_manager.discover_checkpoints()
 
@@ -195,9 +207,15 @@ class CollectionEvaluator:
         return all_metadata
 
     def _log_validation_results(self, validation_results: dict[str, t.Any]) -> None:
-        """Log checkpoint validation results."""
+        """Log checkpoint validation results with explicit L,M info."""
         logger.info("\nCheckpoint Validation Results:")
         logger.info(f"  Model variant: {validation_results['model_variant']}")
+
+        # Log explicit config info
+        explicit_config = validation_results.get("explicit_config", {})
+        if explicit_config:
+            logger.info(f"  Explicit config: L={explicit_config['L']}, M={explicit_config['M']}")
+
         logger.info(f"  Total checkpoints: {validation_results['total_checkpoints']}")
 
         step_coverage = validation_results.get("step_coverage", {})
@@ -256,7 +274,7 @@ class CollectionEvaluator:
         self.progress.last_save_time = datetime.now()
 
     def run_comprehensive_collection(self) -> dict[str, t.Any]:
-        """Run the complete collection pipeline with resume capability."""
+        """Run the complete collection pipeline with resume capability using explicit L,M."""
         start_time = datetime.now()
 
         logger.info("=" * 80)
@@ -270,6 +288,7 @@ class CollectionEvaluator:
         logger.info(f"Evaluation type: {self.config.eval_type}")
         logger.info(f"Output directory: {self.config.output_dir}")
         logger.info(f"Device: {self.config.device}")
+        logger.info(f"Using explicit L={self.config.config_L}, M={self.config.config_m}")
 
         # Load evaluation dataset
         eval_dataset = self.load_evaluation_dataset()
@@ -348,14 +367,15 @@ class CollectionEvaluator:
         }
 
     def _create_evaluation_manifest(self, start_time: datetime) -> dict[str, t.Any]:
-        """Create evaluation manifest with minimal config tracking."""
+        """Create evaluation manifest with explicit L,M tracking."""
         return {
             "experiment_id": f"{self.config.get_shared_identifier()}_{self.config.model_variant}_{self.config.eval_type}_{start_time.strftime('%Y%m%d_%H%M%S')}",
             "dataset_type": self.config.dataset_type,
             "num_seeds": self.config.num_seeds,
             "seed": self.config.seed,
-            "config_L": self.config.config_L,
-            "config_m": self.config.config_m,
+            "config_L": self.config.config_L,  # EXPLICIT
+            "config_m": self.config.config_m,  # EXPLICIT
+            "explicit_config": True,  # Flag indicating explicit L,M usage
             "model_variant": self.config.model_variant,
             "eval_type": self.config.eval_type,
             "start_time": start_time.isoformat(),
@@ -482,7 +502,7 @@ class CollectionEvaluator:
     def _evaluate_single_model(
         self, model: t.Any, tokenizer: t.Any, metadata: ModelMetadata, eval_dataset: dict[str, t.Any]
     ) -> tuple[list[ICLPerformanceRecord], list[AttentionRecord]]:
-        """Evaluate a single model on the specified eval_type."""
+        """Evaluate a single model on the specified eval_type using explicit L,M."""
         results = []
         attention_records = []
 
@@ -512,7 +532,7 @@ class CollectionEvaluator:
                             model, tokenizer, sequence, capture_attention=self.config.capture_attention
                         )
 
-                        # Extract target configuration
+                        # Extract target configuration using EXPLICIT values
                         target_config_L = sequence.get("target_config_L", metadata.config_L)
                         target_config_m = sequence.get("target_config_m", metadata.config_m)
 
@@ -522,13 +542,13 @@ class CollectionEvaluator:
                             determine_training_phase(metadata.checkpoint_step, max_step) if max_step > 0 else "unknown"
                         )
 
-                        # Create performance record with minimal model config
+                        # Create performance record with explicit L,M values
                         record = ICLPerformanceRecord(
                             dataset_type=metadata.dataset_type,
                             num_seeds=metadata.num_seeds,
                             seed=metadata.seed,
-                            config_L=metadata.config_L,
-                            config_m=metadata.config_m,
+                            config_L=metadata.config_L,  # EXPLICIT from metadata
+                            config_m=metadata.config_m,  # EXPLICIT from metadata
                             task_name=metadata.task_name,
                             model_variant=metadata.model_variant,
                             checkpoint_step=metadata.checkpoint_step,
@@ -560,8 +580,8 @@ class CollectionEvaluator:
                                     dataset_type=metadata.dataset_type,
                                     num_seeds=metadata.num_seeds,
                                     seed=metadata.seed,
-                                    config_L=metadata.config_L,
-                                    config_m=metadata.config_m,
+                                    config_L=metadata.config_L,  # EXPLICIT
+                                    config_m=metadata.config_m,  # EXPLICIT
                                     model_variant=metadata.model_variant,
                                     checkpoint_step=metadata.checkpoint_step,
                                     model_id=metadata.model_id,
@@ -649,6 +669,7 @@ class CollectionEvaluator:
             "model_variant": self.config.model_variant,
             "context_sizes_evaluated": list(set(r.context_size for r in self.all_results)),
             "control_types_evaluated": list(set(r.control_type for r in self.all_results)),
+            "explicit_config": {"L": self.config.config_L, "M": self.config.config_m},
         }
 
     def _save_attention_data(self, attention_records: list[AttentionRecord], intermediate: bool = False) -> None:
@@ -681,8 +702,8 @@ class CollectionEvaluator:
                         "dataset_type": record.dataset_type,
                         "num_seeds": record.num_seeds,
                         "seed": record.seed,
-                        "config_L": record.config_L,
-                        "config_m": record.config_m,
+                        "config_L": record.config_L,  # EXPLICIT
+                        "config_m": record.config_m,  # EXPLICIT
                         "model_variant": record.model_variant,
                         "checkpoint_step": record.checkpoint_step,
                         "model_id": record.model_id,
@@ -692,6 +713,7 @@ class CollectionEvaluator:
                         "context_size": record.context_size,
                         "sequence_id": record.sequence_id,
                         "timestamp": record.evaluation_timestamp.isoformat(),
+                        "explicit_config": True,  # Flag indicating explicit L,M usage
                     },
                 )
 

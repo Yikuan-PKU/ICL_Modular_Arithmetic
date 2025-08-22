@@ -1,10 +1,11 @@
-# Collection configuration for uniform_10_L4_M2
+# Collection configuration 
 # Only contains collection-specific parameters
-# Model variants auto-discovered from existing clm.yaml, mlm.yaml files
-# Place at: conf/uniform_10_L4_M2/collection.yaml
+# NOTE: L and M values come from bash script CLI arguments, not from this YAML file
+
 # Base configuration - minimal
+task_name: "clm"
 base_config:
-  # Evaluation types to process (auto-discovered from datasets/.../eval/)
+  # Evaluation types to process (discovered from datasets/.../eval/)
   evaluation_types:
     - "memorization"
     - "id_generalization" 
@@ -41,8 +42,4 @@ collection_config:
   error_handling:
     max_model_failures: 5
     retry_failed_models: true
-    failure_retry_delay: 0_distance: 2         # Maximum increase in L or m
-    num_transfer_seeds: 2            # Seeds per transfer configuration
-    sequences_per_seed: 200          # Sequences per seed
-    min_sequences_per_seed: 50       # Mini
-    transfer_seed_offset: 200000     # Seed offset for transfer seeds
+    failure_retry_delay: 0

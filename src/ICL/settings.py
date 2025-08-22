@@ -86,13 +86,13 @@ def get_experiment_config_name(dataset_type: str, mixture_type: str, total_rules
 
 
 def load_experiment_config(config_type: str, dataset_config: "DatasetConfig", L: int, m: int) -> dict[str, t.Any]:
-    """Load configuration from correct path structure.
+    """Load configuration from correct path structure using explicit L,M.
 
     Args:
         config_type: Type of config to load ("training", "collection", etc.)
         dataset_config: Dataset configuration
-        L: Hierarchy depth (required)
-        m: Multiplicity (required)
+        L: Hierarchy depth (explicit - required)
+        m: Multiplicity (explicit - required)
 
     """
     valid_types = [
@@ -107,7 +107,7 @@ def load_experiment_config(config_type: str, dataset_config: "DatasetConfig", L:
     if config_type not in valid_types:
         raise ValueError(f"Invalid config type: {config_type}. Must be one of {valid_types}")
 
-    # Build config directory path: conf/{dataset_type}_{num_seeds}_L{L}_M{m}/
+    # Build config directory path using explicit L,M: conf/{dataset_type}_{num_seeds}_L{L}_M{m}/
     config_dir_name = f"{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{L}_M{m}"
     config_path = PATH.conf_dir / config_dir_name / f"{config_type}.yaml"
 
@@ -136,22 +136,29 @@ def get_dataset_subdir(is_eval: bool) -> str:
 
 
 #################################
-# Updated experiment configuration
+# Updated experiment configuration with explicit L,M
 
 
 @dataclass(frozen=True)
 class DatasetConfig:
-    """Model-agnostic dataset identification with required L,M values."""
+    """Model-agnostic dataset identification with explicit L,M values."""
 
     dataset_type: str  # uniform, zipf
     seed: int  # RNG seed for generating random seeds
     num_seeds: int  # Number of random seeds to generate
-    L: int  # Hierarchy depth (now required)
-    m: int  # Multiplicity (now required)
+    L: int  # Hierarchy depth (explicit - required)
+    m: int  # Multiplicity (explicit - required)
     is_eval: bool = False
 
+    def __post_init__(self):
+        """Validate explicit L,M values."""
+        if self.L < 1:
+            raise ValueError(f"L must be >= 1, got {self.L}")
+        if self.m < 1:
+            raise ValueError(f"m must be >= 1, got {self.m}")
+
     def to_name(self) -> str:
-        """Generate full dataset name including L,M."""
+        """Generate full dataset name including explicit L,M."""
         base_name = f"{self.dataset_type}_{self.num_seeds}_L{self.L}_M{self.m}"
         return f"{base_name}_eval" if self.is_eval else base_name
 
@@ -160,7 +167,7 @@ class DatasetConfig:
         return f"{self.dataset_type}_{self.num_seeds}_L{self.L}_M{self.m}"
 
     def get_paths(self) -> dict[str, Path]:
-        """Generate complete dataset paths with L,M included."""
+        """Generate complete dataset paths with explicit L,M included."""
         subdir = get_dataset_subdir(self.is_eval)
         base_name = self.to_base_name()
 
@@ -172,11 +179,11 @@ class DatasetConfig:
         }
 
     def get_config_paths(self, L: int, m: int) -> dict[str, Path]:
-        """Generate dataset-specific paths for a given (L,M) configuration.
+        """Generate dataset-specific paths for explicit (L,M) configuration.
 
-        Note: L,M parameters kept for backward compatibility but will use self.L, self.m
+        Note: L,M parameters are ignored - uses instance values (explicit)
         """
-        # Use instance L,M values instead of parameters
+        # Use instance L,M values (explicit) instead of parameters
         L, m = self.L, self.m
         subdir = get_dataset_subdir(self.is_eval)
 
@@ -202,15 +209,15 @@ class ModelConfig:
     model_type: str
 
     def to_name(self) -> str:
-        """Generate full model name including L,M."""
+        """Generate full model name including explicit L,M."""
         return f"{self.dataset_config.to_base_name()}_{self.model_type}"
 
     def get_model_paths(self) -> dict[str, Path]:
-        """Generate model-specific paths with correct L,M included."""
-        # Get dataset paths (these now include L,M)
+        """Generate model-specific paths with explicit L,M included."""
+        # Get dataset paths (these now include explicit L,M)
         dataset_paths = self.dataset_config.get_paths()
 
-        # Model directory includes the full dataset name with L,M
+        # Model directory includes the full dataset name with explicit L,M
         model_base_name = self.dataset_config.to_base_name()  # e.g., "uniform_10_L4_M2"
 
         return {
@@ -263,11 +270,11 @@ class ExperimentConfig:
 
 
 #################################
-# Argument parser
+# Argument parser with explicit L,M requirements
 
 
 def create_base_parser(require_eval_flag: bool = False, require_model_type: bool = False) -> argparse.ArgumentParser:
-    """Create minimal shared parser for dataset generation with required L,M arguments."""
+    """Create minimal shared parser for dataset generation with EXPLICIT L,M arguments."""
     parser = argparse.ArgumentParser(add_help=False)
 
     # Dataset identification
@@ -282,9 +289,9 @@ def create_base_parser(require_eval_flag: bool = False, require_model_type: bool
         "--num-seeds", type=int, default=1, help="Number of random seeds to generate (default: 1)"
     )
 
-    # L,M are now required arguments for all scripts
-    dataset_group.add_argument("--L", type=int, required=True, help="Hierarchy depth (required)")
-    dataset_group.add_argument("--M", type=int, required=True, help="Multiplicity (required)")
+    # L,M are EXPLICIT arguments from bash script - REQUIRED
+    dataset_group.add_argument("--L", type=int, required=True, help="Hierarchy depth (EXPLICIT - required)")
+    dataset_group.add_argument("--M", type=int, required=True, help="Multiplicity (EXPLICIT - required)")
 
     # Add eval flag if required
     if require_eval_flag:
@@ -312,12 +319,19 @@ def parse_dataset_config(args: argparse.Namespace) -> DatasetConfig:
     """Convert parsed arguments to DatasetConfig with explicit L,M values."""
     is_eval = getattr(args, "eval", False)
 
+    # Validate explicit L,M arguments
+    if not hasattr(args, "L") or not hasattr(args, "M"):
+        raise ValueError("L and M arguments are required (explicit from bash script)")
+
+    if args.L is None or args.M is None:
+        raise ValueError("L and M cannot be None (must be explicit)")
+
     return DatasetConfig(
         dataset_type=args.dataset_type,
         seed=args.seed,
         num_seeds=args.num_seeds,
-        L=args.L,
-        m=args.M,
+        L=args.L,  # EXPLICIT
+        m=args.M,  # EXPLICIT
         is_eval=is_eval,
     )
 
@@ -341,11 +355,22 @@ def validate_args(args: argparse.Namespace) -> bool:
     if args.num_seeds < 1:
         raise ValueError("num_seeds must be at least 1")
 
-    # Validate L,M (now always required)
+    # Validate explicit L,M (always required)
+    if not hasattr(args, "L") or not hasattr(args, "M"):
+        raise ValueError("L and M arguments are required")
+
+    if args.L is None or args.M is None:
+        raise ValueError("L and M cannot be None")
+
     if args.L < 1:
         raise ValueError("L must be at least 1")
 
     if args.M < 1:
         raise ValueError("M must be at least 1")
+
+    # Validate model_type if required
+    if hasattr(args, "model_type"):
+        if args.model_type and args.model_type not in ["clm", "mlm"]:
+            raise ValueError("model_type must be 'clm' or 'mlm'")
 
     return True

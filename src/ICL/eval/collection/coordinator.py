@@ -265,6 +265,7 @@ class CollectionCoordinator:
         legacy_config.seed = self.config.seed
         legacy_config.config_L = self.config.config_L
         legacy_config.config_m = self.config.config_m
+        legacy_config.model_type = self.config.model_type  # FIX: Add missing model_type
 
         # Model and evaluation
         legacy_config.model_variant = self.config.model_variant

@@ -1,4 +1,4 @@
-"""Collection configuration with minimal model config parsing."""
+"""Collection configuration with explicit L,M arguments - no auto-discovery."""
 
 import typing as t
 from dataclasses import dataclass, field
@@ -8,29 +8,28 @@ import yaml
 
 from ICL.eval.collection.data_schema import (
     EvalType,
-    generate_model_variant_name,
-    load_minimal_model_config,
 )
 from ICL.settings import PATH
 
 
 @dataclass
 class CollectionConfig:
-    """Collection configuration using training script style arguments."""
+    """Collection configuration using explicit L,M,model_type arguments from bash script."""
 
-    # Core experiment identification (from shared args)
+    # Core experiment identification (explicit from shared args)
     dataset_type: str
     num_seeds: int
     seed: int
-    config_L: int | None = None  # Auto-discovered
-    config_m: int | None = None  # Auto-discovered
+    config_L: int  # EXPLICIT - no auto-discovery
+    config_m: int  # EXPLICIT - no auto-discovery
+    model_type: str  # EXPLICIT - "clm" or "mlm" from bash script
 
     # Collection mode
-    model_variant: str | None = None  # Auto-discovered or specified
+    model_variant: str | None = None  # Auto-generated from model_type + training.yaml
     eval_type: EvalType | None = None  # Specified or batch mode
     batch_mode: bool = False
 
-    # Auto-discovered paths
+    # Auto-discovered paths (using explicit L,M)
     eval_dataset_path: Path | None = None
     model_base_dir: Path | None = None
     output_dir: Path | None = None
@@ -68,198 +67,189 @@ class CollectionConfig:
     overwrite: bool = False
 
     def __post_init__(self):
-        """Auto-discover L,M and load configuration."""
+        """Initialize paths and load configuration using explicit L,M,model_type."""
+        # Validate that L,M,model_type are explicitly provided
         if self.config_L is None or self.config_m is None:
-            self._auto_discover_L_M()
+            raise ValueError("config_L and config_m must be explicitly provided - no auto-discovery")
+
+        if not self.model_type:
+            raise ValueError("model_type must be explicitly provided from bash script")
+
+        # Validate L,M values
+        if self.config_L < 1:
+            raise ValueError(f"config_L must be >= 1, got {self.config_L}")
+        if self.config_m < 1:
+            raise ValueError(f"config_m must be >= 1, got {self.config_m}")
+
+        # Validate model_type
+        if self.model_type not in ["clm", "mlm"]:
+            raise ValueError(f"model_type must be 'clm' or 'mlm', got '{self.model_type}'")
+
+        # Auto-generate model_variant if not provided
+        if not self.model_variant and not self.batch_mode:
+            self.model_variant = self._generate_model_variant_from_training_yaml()
+
+        # Discover paths using explicit L,M
         if not self.eval_dataset_path:
             self._discover_paths()
+
+        # Load collection configuration
         if not self.available_evaluation_types:
             self._load_collection_config()
 
-    def _auto_discover_L_M(self) -> None:
-        """Auto-discover L and M from available dataset directories."""
-        # Look for dataset directories matching pattern
-        base_pattern = f"{self.dataset_type}_{self.num_seeds}"
-        dataset_root = PATH.dataset_root
-
-        if not dataset_root.exists():
-            raise FileNotFoundError(f"Dataset root does not exist: {dataset_root}")
-
-        import re
-
-        pattern = re.compile(rf"^{re.escape(base_pattern)}_L(\d+)_M(\d+)$")
-
-        found_configs = []
-        for item in dataset_root.iterdir():
-            if item.is_dir():
-                match = pattern.match(item.name)
-                if match:
-                    L = int(match.group(1))
-                    M = int(match.group(2))
-                    # Verify that eval directory exists
-                    eval_dir = item / "eval"
-                    if eval_dir.exists():
-                        found_configs.append((L, M))
-
-        if not found_configs:
-            raise FileNotFoundError(f"No dataset configurations found for {base_pattern}")
-
-        if len(found_configs) > 1:
-            print(f"Warning: Multiple L,M configurations found: {found_configs}")
-            print(f"Using the first one: {found_configs[0]}")
-
-        self.config_L, self.config_m = found_configs[0]
-        print(f"Auto-discovered L={self.config_L}, M={self.config_m}")
-
     def get_shared_identifier(self) -> str:
-        """Generate shared identifier."""
+        """Generate shared identifier using explicit L,M."""
         return f"{self.dataset_type}_{self.num_seeds}_L{self.config_L}_M{self.config_m}"
 
     def _discover_paths(self) -> None:
-        """Auto-discover all required paths."""
+        """Discover all required paths using explicit L,M values."""
         shared_id = self.get_shared_identifier()
 
-        # Base paths
+        # Base paths using explicit L,M
         dataset_base = PATH.dataset_root / shared_id
         model_base = PATH.model_dir / shared_id
-        config_base = PATH.conf_dir / shared_id
+        self.config_base = PATH.conf_dir / shared_id
+
+        # Validate that paths exist
+        if not dataset_base.exists():
+            raise FileNotFoundError(
+                f"Dataset directory not found: {dataset_base}\nRequired for L={self.config_L}, M={self.config_m}"
+            )
+
+        if not self.config_base.exists():
+            raise FileNotFoundError(
+                f"Config directory not found: {self.config_base}\nRequired for L={self.config_L}, M={self.config_m}"
+            )
 
         # Collection config file path
-        self.config_file_path = config_base / "collection.yaml"
+        self.config_file_path = self.config_base / "collection.yaml"
 
         if not self.batch_mode and self.eval_type and self.model_variant:
             # Single combination mode
             self.eval_dataset_path = dataset_base / "eval" / self.eval_type / "dataset"
             self.model_base_dir = model_base / self.model_variant
 
+            # Validate single mode paths
+            if not self.eval_dataset_path.exists():
+                raise FileNotFoundError(f"Evaluation dataset not found: {self.eval_dataset_path}")
+
+            if not self.model_base_dir.exists():
+                raise FileNotFoundError(f"Model directory not found: {self.model_base_dir}")
+
             # Output directory: results/{shared_id}/{model_variant}/{eval_type}/collection
             self.output_dir = PATH.result_dir / shared_id / self.model_variant / self.eval_type / "collection"
         else:
-            # Batch mode or discovery mode - use base paths
+            # Batch mode - use base paths
             self.model_base_dir = model_base
             self.output_dir = PATH.result_dir / shared_id
 
+            # Validate batch mode paths
+            if not self.model_base_dir.exists():
+                raise FileNotFoundError(f"Model base directory not found: {self.model_base_dir}")
+
     def _load_collection_config(self) -> None:
         """Load collection configuration from YAML file."""
-        try:
-            if self.config_file_path and self.config_file_path.exists():
-                with open(self.config_file_path) as f:
-                    config_data = yaml.safe_load(f) or {}
-            else:
-                config_data = {}
-                print(f"Warning: No collection.yaml found at {self.config_file_path}")
-
-            # Load base config
-            base_config = config_data.get("base_config", {})
-            self.available_evaluation_types = base_config.get(
-                "evaluation_types", ["memorization", "id_generalization", "ood_same_rule", "ood_transfer"]
-            )
-
-            # Auto-discover model variants from config files (minimal parsing)
-            self.available_model_variants = self._auto_discover_model_variants()
-
-            # Load collection config
-            collection_config = config_data.get("collection_config", {})
-            self.capture_attention = collection_config.get("capture_attention", self.capture_attention)
-
-            # Evaluation parameters
-            eval_params = collection_config.get("evaluation_parameters", {})
-            self.context_sizes = eval_params.get("context_sizes", self.context_sizes)
-            self.control_types = eval_params.get("control_types", self.control_types)
-
-            # Execution parameters
-            exec_params = collection_config.get("execution_parameters", {})
-            self.batch_size = exec_params.get("batch_size", self.batch_size)
-            self.max_sequences_per_condition = exec_params.get(
-                "max_sequences_per_condition", self.max_sequences_per_condition
-            )
-            self.device = exec_params.get("device", self.device)
-            self.save_intermediate = exec_params.get("save_intermediate", self.save_intermediate)
-            self.intermediate_save_frequency = exec_params.get(
-                "intermediate_save_frequency", self.intermediate_save_frequency
-            )
-
-            # Memory management
-            memory_config = collection_config.get("memory_management", {})
-            self.clear_cache_frequency = memory_config.get("clear_cache_frequency", self.clear_cache_frequency)
-            self.max_memory_usage_gb = memory_config.get("max_memory_usage_gb", self.max_memory_usage_gb)
-
-            # Error handling
-            error_config = collection_config.get("error_handling", {})
-            self.max_model_failures = error_config.get("max_model_failures", self.max_model_failures)
-            self.retry_failed_models = error_config.get("retry_failed_models", self.retry_failed_models)
-            self.failure_retry_delay = error_config.get("failure_retry_delay", self.failure_retry_delay)
-
-        except Exception as e:
-            print(f"Error loading collection config: {e}")
-            print("Using default configuration values")
-
-    def _auto_discover_model_variants(self) -> list[str]:
-        """Auto-discover model variants from existing model config files using minimal parsing."""
         shared_id = self.get_shared_identifier()
-        config_dir = PATH.conf_dir / shared_id
+        config_base = PATH.conf_dir / shared_id
 
-        if not config_dir.exists():
-            print(f"Warning: Config directory not found: {config_dir}")
-            return []
+        if self.config_file_path and self.config_file_path.exists():
+            with open(self.config_file_path) as f:
+                config_data = yaml.safe_load(f) or {}
+
+        else:
+            config_data = {}
+            print(f"Warning: No collection.yaml found at {self.config_file_path}")
+
+        # Load base config
+        base_config = config_data.get("base_config", {})
+        self.available_evaluation_types = base_config.get(
+            "evaluation_types", ["memorization", "id_generalization", "ood_same_rule", "ood_transfer"]
+        )
+
+        # Discover model variants from unified training.yaml (using explicit model_type)
+        self.available_model_variants = self._discover_model_variants(config_base)
+
+        # Load collection config
+        collection_config = config_data.get("collection_config", {})
+        self.capture_attention = collection_config.get("capture_attention", self.capture_attention)
+
+        # Evaluation parameters
+        eval_params = collection_config.get("evaluation_parameters", {})
+        self.context_sizes = eval_params.get("context_sizes", self.context_sizes)
+        self.control_types = eval_params.get("control_types", self.control_types)
+
+        # Execution parameters
+        exec_params = collection_config.get("execution_parameters", {})
+        self.batch_size = exec_params.get("batch_size", self.batch_size)
+        self.max_sequences_per_condition = exec_params.get(
+            "max_sequences_per_condition", self.max_sequences_per_condition
+        )
+        self.device = exec_params.get("device", self.device)
+        self.save_intermediate = exec_params.get("save_intermediate", self.save_intermediate)
+        self.intermediate_save_frequency = exec_params.get(
+            "intermediate_save_frequency", self.intermediate_save_frequency
+        )
+
+        # Memory management
+        memory_config = collection_config.get("memory_management", {})
+        self.clear_cache_frequency = memory_config.get("clear_cache_frequency", self.clear_cache_frequency)
+        self.max_memory_usage_gb = memory_config.get("max_memory_usage_gb", self.max_memory_usage_gb)
+
+        # Error handling
+        error_config = collection_config.get("error_handling", {})
+        self.max_model_failures = error_config.get("max_model_failures", self.max_model_failures)
+        self.retry_failed_models = error_config.get("retry_failed_models", self.retry_failed_models)
+        self.failure_retry_delay = error_config.get("failure_retry_delay", self.failure_retry_delay)
+
+    def _discover_model_variants(self, config_base):
+        """Discover all valid model variants by combining the shared training.yaml
+        with task-specific configs. Variants correspond to real expected setups
+        (e.g., clm_noshuffle_seedbalanced), not synthetic cross-products.
+        """
+        training_path = Path(config_base) / "training.yaml"
+
+        if not training_path.exists():
+            raise FileNotFoundError(f"training.yaml not found in {config_base}")
+
+        # Load shared base config
+        with open(training_path) as f:
+            base_cfg = yaml.safe_load(f)
+
+        task_specific = base_cfg.get("task_specific", {})
+        if not task_specific:
+            raise ValueError(f"'task_specific' section missing in {training_path}")
+
+        # Discover valid task names (e.g., clm, mlm)
+        valid_tasks = list(task_specific.keys())
+
+        # Use self.model_type instead of the parameter
+        model_type_filter = self.model_type
+        if model_type_filter and model_type_filter not in valid_tasks:
+            raise ValueError(f"Unknown model type '{model_type_filter}'. Available: {valid_tasks}")
 
         model_variants = []
 
-        # Scan for model config files (excluding collection.yaml)
-        for config_file in config_dir.glob("*.yaml"):
-            if config_file.name != "collection.yaml":
-                try:
-                    # Use minimal config loading - only parse 3 essential fields
-                    model_config = load_minimal_model_config(config_file)
-                    variant_name = generate_model_variant_name(model_config)
-                    model_variants.append(variant_name)
+        # Generate variants for each task-specific setup
+        for mt, task_cfg in task_specific.items():
+            # Respect user-specified filter
+            if model_type_filter and mt != model_type_filter:
+                continue
 
-                    print(f"Auto-discovered model variant: {variant_name}")
-                    print(f"  From: {config_file.name}")
-                    print(
-                        f"  Config: task_name={model_config['task_name']}, "
-                        f"shuffle={model_config['shuffle_before_packing']}, "
-                        f"seed_balanced={model_config['seed_balanced_batching']}"
-                    )
+            # Variant naming convention based on actual shuffle behavior:
+            # If shuffle_before_packing is False -> "noshuffle"
+            # If shuffle_before_packing is True -> use shuffle_strategy
+            shuffle_before_packing = base_cfg.get("shuffle_before_packing", False)
+            if shuffle_before_packing:
+                shuffle_strategy = base_cfg.get("shuffle_strategy", "global")
+            else:
+                shuffle_strategy = "noshuffle"
 
-                except Exception as e:
-                    print(f"Warning: Failed to process config file {config_file}: {e}")
+            seed_strategy = base_cfg.get("seed_sampling_strategy", "balanced")
+            variant_name = f"{mt}_{shuffle_strategy}_seed{seed_strategy}"
+
+            model_variants.append(variant_name)
 
         return model_variants
-
-    def discover_available_combinations(self) -> list[tuple[str, EvalType]]:
-        """Discover all available (model_variant, eval_type) combinations."""
-        from ICL.settings import PATH
-
-        combinations = []
-        shared_id = self.get_shared_identifier()
-
-        # Use auto-discovered model variants
-        model_variants = self.available_model_variants
-
-        # Discover evaluation types
-        eval_base = PATH.dataset_root / shared_id / "eval"
-        if eval_base.exists():
-            discovered_eval_types = [d.name for d in eval_base.iterdir() if d.is_dir()]
-            if self.available_evaluation_types:
-                # Filter by config
-                eval_types = [t for t in discovered_eval_types if t in self.available_evaluation_types]
-            else:
-                eval_types = discovered_eval_types
-        else:
-            eval_types = []
-
-        # Create all combinations and validate they exist
-        model_base = PATH.model_dir / shared_id
-        for variant in model_variants:
-            for eval_type in eval_types:
-                eval_dataset_path = eval_base / eval_type / "dataset"
-                model_variant_path = model_base / variant
-
-                if eval_dataset_path.exists() and model_variant_path.exists():
-                    combinations.append((variant, eval_type))
-
-        return combinations
 
     def create_single_config(self, model_variant: str, eval_type: EvalType) -> "CollectionConfig":
         """Create a single-combination config from this batch config."""
@@ -267,8 +257,9 @@ class CollectionConfig:
             dataset_type=self.dataset_type,
             num_seeds=self.num_seeds,
             seed=self.seed,
-            config_L=self.config_L,
-            config_m=self.config_m,
+            config_L=self.config_L,  # Use explicit values
+            config_m=self.config_m,  # Use explicit values
+            model_type=self.model_type,  # Use explicit model_type
             model_variant=model_variant,
             eval_type=eval_type,
             capture_attention=self.capture_attention,
@@ -290,11 +281,22 @@ class CollectionConfig:
         )
 
     def validate(self) -> None:
-        """Validate configuration and paths."""
+        """Validate configuration and paths using explicit L,M,model_type."""
+        # Validate explicit L,M,model_type values
+        if self.config_L is None or self.config_m is None:
+            raise ValueError("config_L and config_m must be explicitly provided")
+
+        if not self.model_type:
+            raise ValueError("model_type must be explicitly provided")
+
+        if self.config_L < 1 or self.config_m < 1:
+            raise ValueError(f"L and M must be >= 1, got L={self.config_L}, M={self.config_m}")
+
+        if self.model_type not in ["clm", "mlm"]:
+            raise ValueError(f"model_type must be 'clm' or 'mlm', got '{self.model_type}'")
+
         if self.batch_mode:
             # Validate base paths for batch mode
-            from ICL.settings import PATH
-
             shared_id = self.get_shared_identifier()
             base_dataset = PATH.dataset_root / shared_id
             base_model = PATH.model_dir / shared_id
@@ -354,6 +356,7 @@ class CollectionConfig:
             "seed": self.seed,
             "config_L": self.config_L,
             "config_m": self.config_m,
+            "model_type": self.model_type,  # Include explicit model_type
             "model_variant": self.model_variant,
             "eval_type": self.eval_type,
             "paths": {
@@ -386,12 +389,51 @@ class CollectionConfig:
             "batch_mode": self.batch_mode,
         }
 
+    def discover_available_combinations(self) -> list[tuple[str, EvalType]]:
+        """Discover all available (model_variant, eval_type) combinations using explicit L,M."""
+        combinations = []
+        shared_id = self.get_shared_identifier()
+
+        # Use discovered model variants
+        model_variants = self.available_model_variants
+
+        # Discover evaluation types from explicit L,M directory structure
+        eval_base = PATH.dataset_root / shared_id / "eval"
+        if eval_base.exists():
+            discovered_eval_types = [d.name for d in eval_base.iterdir() if d.is_dir()]
+            if self.available_evaluation_types:
+                # Filter by config
+                eval_types = [t for t in discovered_eval_types if t in self.available_evaluation_types]
+            else:
+                eval_types = discovered_eval_types
+        else:
+            raise FileNotFoundError(f"Evaluation directory not found: {eval_base}")
+
+        # Create all combinations and validate they exist
+        model_base = PATH.model_dir / shared_id
+
+        for variant in model_variants:
+            for eval_type in eval_types:
+                eval_dataset_path = eval_base / eval_type / "dataset"
+                model_variant_path = model_base / variant
+
+                if eval_dataset_path.exists() and model_variant_path.exists():
+                    combinations.append((variant, eval_type))
+
+        if not combinations:
+            raise RuntimeError(f"No valid combinations found for {shared_id}")
+
+        return combinations
+
     @classmethod
     def from_args(
         cls,
         dataset_type: str,
         num_seeds: int,
         seed: int,
+        config_L: int,  # EXPLICIT - required
+        config_m: int,  # EXPLICIT - required
+        model_type: str,  # EXPLICIT - required ("clm" or "mlm")
         model_variant: str | None = None,
         eval_type: EvalType | None = None,
         device: str = "cuda",
@@ -400,11 +442,14 @@ class CollectionConfig:
         batch_mode: bool = False,
         **kwargs,
     ) -> "CollectionConfig":
-        """Create CollectionConfig from command line arguments."""
+        """Create CollectionConfig from command line arguments with explicit L,M,model_type."""
         config = cls(
             dataset_type=dataset_type,
             num_seeds=num_seeds,
             seed=seed,
+            config_L=config_L,  # EXPLICIT
+            config_m=config_m,  # EXPLICIT
+            model_type=model_type,  # EXPLICIT
             model_variant=model_variant,
             eval_type=eval_type,
             device=device,
@@ -422,23 +467,45 @@ class CollectionConfig:
 
 
 def create_collection_parser() -> t.Any:
-    """Create argument parser for collection phase (training script style)."""
+    """Create argument parser for collection phase with explicit L,M,model_type."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="ICL Evaluation Collection Phase")
+    # Create main parser first
+    parser = argparse.ArgumentParser(
+        description="ICL Evaluation Collection Phase", formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
 
-    # Core identification (training script style)
-    core_group = parser.add_argument_group("Core Experiment Parameters")
-    core_group.add_argument("--dataset-type", required=True, choices=["uniform", "zipf"], help="Dataset type")
-    core_group.add_argument("--num-seeds", type=int, required=True, help="Number of seeds")
-    core_group.add_argument("--seed", type=int, required=True, help="Random seed")
+    # Add dataset identification arguments (from base parser logic)
+    dataset_group = parser.add_argument_group("Dataset Identification")
+    dataset_group.add_argument(
+        "--dataset-type", choices=["uniform", "zipf"], required=True, help="Probability distribution for rule sampling"
+    )
+    dataset_group.add_argument(
+        "--seed", type=int, required=True, help="RNG seed for generating random seeds (for reproducibility)"
+    )
+    dataset_group.add_argument(
+        "--num-seeds", type=int, default=1, help="Number of random seeds to generate (default: 1)"
+    )
+
+    # Add EXPLICIT L,M,model_type arguments
+    dataset_group.add_argument("--L", type=int, required=True, help="Hierarchy depth (EXPLICIT - required)")
+    dataset_group.add_argument("--M", type=int, required=True, help="Multiplicity (EXPLICIT - required)")
+    dataset_group.add_argument(
+        "--model-type", choices=["clm", "mlm"], required=True, help="Type of model (EXPLICIT - required)"
+    )
+
+    # Pipeline control
+    control_group = parser.add_argument_group("Pipeline Control")
+    control_group.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs")
+    control_group.add_argument("--resume", action="store_true", help="Skip if outputs already exist")
+    control_group.add_argument("--verbose", action="store_true", help="Enable verbose output")
 
     # Single vs batch mode
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--batch-mode", action="store_true", help="Run all available combinations")
 
     single_group = parser.add_argument_group("Single Combination Mode")
-    single_group.add_argument("--model-variant", help="Specific model variant (auto-discovered from configs)")
+    single_group.add_argument("--model-variant", help="Specific model variant (auto-generated from training.yaml)")
     single_group.add_argument(
         "--eval-type",
         choices=["memorization", "id_generalization", "ood_same_rule", "ood_transfer"],
@@ -453,12 +520,6 @@ def create_collection_parser() -> t.Any:
     collection_group.add_argument("--no-attention", action="store_true", help="Disable attention capture")
     collection_group.add_argument("--no-intermediate", action="store_true", help="Disable intermediate saving")
 
-    # Pipeline control
-    control_group = parser.add_argument_group("Pipeline Control")
-    control_group.add_argument("--overwrite", action="store_true", help="Overwrite existing results")
-    control_group.add_argument("--resume", action="store_true", help="Resume from existing partial results")
-    control_group.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-
     # Utility commands
     util_group = parser.add_argument_group("Utility Commands")
     util_group.add_argument("--validate-only", action="store_true", help="Validate setup without running")
@@ -468,7 +529,7 @@ def create_collection_parser() -> t.Any:
 
 
 def create_collection_config_from_args(args) -> CollectionConfig:
-    """Create CollectionConfig from parsed arguments."""
+    """Create CollectionConfig from parsed arguments with explicit L,M,model_type."""
     # Skip validation for utility commands
     is_utility_command = getattr(args, "list_combinations", False) or getattr(args, "validate_only", False)
 
@@ -476,10 +537,20 @@ def create_collection_config_from_args(args) -> CollectionConfig:
     if not is_utility_command and not args.batch_mode and (not args.model_variant or not args.eval_type):
         raise ValueError("Must specify --model-variant and --eval-type, or use --batch-mode")
 
+    # Validate L,M,model_type are provided
+    if not hasattr(args, "L") or not hasattr(args, "M") or args.L is None or args.M is None:
+        raise ValueError("L and M arguments are required (from bash script)")
+
+    if not hasattr(args, "model_type") or not args.model_type:
+        raise ValueError("model_type argument is required (from bash script)")
+
     config = CollectionConfig.from_args(
         dataset_type=args.dataset_type,
         num_seeds=args.num_seeds,
         seed=args.seed,
+        config_L=args.L,  # EXPLICIT from bash script
+        config_m=args.M,  # EXPLICIT from bash script
+        model_type=args.model_type,  # EXPLICIT from bash script
         model_variant=getattr(args, "model_variant", None),
         eval_type=getattr(args, "eval_type", None),
         device=getattr(args, "device", "cuda"),
