@@ -33,4 +33,4 @@ python $SCRIPT_ROOT/collection.py $SHARED_ARGS --batch-mode --validate-only
 
 # Step 3: Run script
 echo "Step 2: Validating auto-discovered configuration..."
-python $SCRIPT_ROOT/collection.py $SHARED_ARGS --batch-mode $PIPELINE_ARGS
+python $SCRIPT_ROOT/collection.py $SHARED_ARGS --batch-mode $PIPELINE_ARGS --overwrite

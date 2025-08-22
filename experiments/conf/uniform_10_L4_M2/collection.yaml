@@ -17,6 +17,7 @@ base_config:
   # - mlm.yaml → mlm_noshuffle_seedbalanced (similar settings)
   # Only 3 fields parsed: task_name, shuffle_before_packing, seed_balanced_batching
 
+
 # Collection-specific parameters (not in model configs)
 collection_config:
   # Memory management - control attention data collection
@@ -32,9 +33,9 @@ collection_config:
   
   # Execution parameters
   execution_parameters:
-    device: "cuda"
+    device: cpu
     batch_size: 32
-    max_sequences_per_condition: 200
+    max_sequences_per_condition: 10
     save_intermediate: true
     intermediate_save_frequency: 5
   
@@ -47,4 +48,4 @@ collection_config:
   error_handling:
     max_model_failures: 5
     retry_failed_models: true
-    failure_retry_delay: 60
+    failure_retry_delay: 0
