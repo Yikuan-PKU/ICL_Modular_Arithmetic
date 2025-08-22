@@ -1,9 +1,8 @@
-# config/uniform_10_L4_M2/clm.yaml
-# CLM-specific training configuration with seed-aware batching
-L: 4
-M: 2
+# config/uniform_10_L4_M2/training.yaml
+# Unified training configuration for both CLM and MLM
+# L and M values now come from command line arguments
 
-# Model architecture
+# Model architecture (shared)
 vocab_size: 37
 hidden_size: 512
 num_hidden_layers: 6
@@ -11,8 +10,7 @@ num_attention_heads: 8
 intermediate_size: 2048
 max_position_embeddings: 2048
 
-# Training parameters
-task_name: "clm"
+# Training parameters (shared)
 num_train_epochs: 20
 per_device_train_batch_size: 32
 per_device_eval_batch_size: 64
@@ -22,54 +20,64 @@ weight_decay: 0.01
 warmup_ratio: 0.1
 lr_scheduler_type: "linear"
 
-# Sequence processing (FIXED - always pack)
+# Sequence processing (shared)
 max_sequence_length: 512
 pack_sequences: true  # Always true, not configurable
-mlm: false  # CLM doesn't use masking
 
-# Cross-configuration shuffling (before packing)
+# Cross-configuration shuffling (shared)
 shuffle_before_packing: false
 shuffle_strategy: "global"  # "global", "balanced"
 shuffle_seed: 42
 
+# Seed-aware batching (shared)
 seed_balanced_batching: true
 seed_sampling_strategy: "balanced"  # "balanced", "random", "weighted"
 seeds_per_batch: null  # null = use all available seeds
 
-# Epoch-based checkpointing (UPDATED)
+# Checkpointing and evaluation (shared)
 save_strategy: "epoch"
 save_steps: 1  # Save every epoch
 save_total_limit: 100
 load_best_model_at_end: true
 metric_for_best_model: "eval_loss"
-
-# Epoch-based evaluation (UPDATED)
 evaluation_strategy: "epoch"
 eval_steps: 1  # Evaluate every epoch
 
-# Logging
+# Logging (shared)
 logging_strategy: "steps"
 logging_steps: 50
 
-# Optimization
+# Optimization (shared)
 adam_beta1: 0.9
 adam_beta2: 0.999
 max_grad_norm: 1.0
 
-# Dataset configuration
+# Dataset configuration (shared)
 train_split_ratio: 0.8
 max_samples_per_seed: null  # null = use all samples
 
-# Hierarchical metrics
+# Hierarchical metrics (shared)
 track_hierarchical_metrics: true
 
-# Reproducibility
+# Reproducibility (shared)
 seed: 42
 
-# Logging and monitoring
+# Logging and monitoring (shared)
 report_to: ["tensorboard"]
-run_name: null  # Will be auto-generated with enhanced naming
+run_name: null  # Will be auto-generated
 
-# Mixed precision (optional)
+# Mixed precision (shared)
 fp16: false
 bf16: false
+
+# Task-specific configurations
+# The task_name will be set by --model-type argument (clm or mlm)
+task_specific:
+  clm:
+    task_name: "clm"
+    mlm: false  # CLM doesn't use masking
+    
+  mlm:
+    task_name: "mlm"
+    mlm: true   # MLM uses masking
+    mlm_probability: 0.15  # Standard MLM masking probability

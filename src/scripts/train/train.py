@@ -43,23 +43,41 @@ def create_training_parser() -> argparse.ArgumentParser:
 
 
 def load_model_yaml_config(model_config: ModelConfig) -> dict[str, t.Any]:
-    """Load model-specific YAML configuration using explicit L,M values."""
+    """Load unified training YAML configuration and extract task-specific settings."""
     L = model_config.dataset_config.L
     m = model_config.dataset_config.m
 
     logger.info(f"Using dataset configuration: L={L}, m={m}")
 
-    # Load config using the explicit L,M values
-    config_type = model_config.model_type  # "clm" or "mlm"
+    # Load unified training config
+    config_type = "training"  # Always load training.yaml now
     yaml_config = load_experiment_config(config_type, model_config.dataset_config, L=L, m=m)
 
-    if yaml_config:
-        logger.info(
-            f"✓ Loaded {config_type} config from conf/{model_config.dataset_config.dataset_type}_{model_config.dataset_config.num_seeds}_L{L}_M{m}/{config_type}.yaml"
-        )
-    else:
-        logger.warning(f"✗ No {config_type} config found for L={L}, m={m}")
+    if not yaml_config:
+        logger.warning(f"✗ No training config found for L={L}, m={m}")
+        return {}
 
+    logger.info(
+        f"✓ Loaded training config from conf/{model_config.dataset_config.dataset_type}_{model_config.dataset_config.num_seeds}_L{L}_M{m}/training.yaml"
+    )
+
+    # Extract task-specific configuration
+    task_name = model_config.model_type  # "clm" or "mlm"
+    task_specific_config = yaml_config.get("task_specific", {}).get(task_name, {})
+
+    if task_specific_config:
+        logger.info(f"✓ Applied task-specific configuration for {task_name}")
+        # Merge base config with task-specific overrides
+        merged_config = yaml_config.copy()
+        merged_config.update(task_specific_config)
+        # Remove the task_specific section from the final config
+        merged_config.pop("task_specific", None)
+        return merged_config
+    logger.warning(f"⚠ No task-specific configuration found for {task_name}, using base config")
+    # Set the task_name from model_type
+    yaml_config["task_name"] = task_name
+    # Remove the task_specific section
+    yaml_config.pop("task_specific", None)
     return yaml_config
 
 

@@ -89,13 +89,21 @@ def load_experiment_config(config_type: str, dataset_config: "DatasetConfig", L:
     """Load configuration from correct path structure.
 
     Args:
-        config_type: Type of config to load ("clm", "mlm", etc.)
+        config_type: Type of config to load ("training", "collection", etc.)
         dataset_config: Dataset configuration
         L: Hierarchy depth (required)
         m: Multiplicity (required)
 
     """
-    valid_types = ["train_dataset", "eval_dataset", "clm", "mlm", "collection"]
+    valid_types = [
+        "train_dataset",
+        "eval_dataset",
+        "training",
+        "collection",
+        "generate_raw",
+        "create_split",
+        "generate_eval",
+    ]
     if config_type not in valid_types:
         raise ValueError(f"Invalid config type: {config_type}. Must be one of {valid_types}")
 
@@ -138,8 +146,8 @@ class DatasetConfig:
     dataset_type: str  # uniform, zipf
     seed: int  # RNG seed for generating random seeds
     num_seeds: int  # Number of random seeds to generate
-    L: int  # Hierarchy depth
-    m: int  # Multiplicity
+    L: int  # Hierarchy depth (now required)
+    m: int  # Multiplicity (now required)
     is_eval: bool = False
 
     def to_name(self) -> str:

@@ -15,9 +15,11 @@ DATASET_TYPE="uniform"
 MODEL_TYPE="clm"
 NUM_SEEDS=10
 SEED=42
+L=4
+M=2
 
 # Construct shared arguments (updated to match new argument structure)
-SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED"
+SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED --L $L --M $M"
 
 # Optional pipeline controls
 PIPELINE_ARGS="--verbose"
