@@ -1,16 +1,20 @@
-"""Checkpoint management and model loading utilities."""
+"""Checkpoint management with minimal model config parsing."""
 
-import json
 import logging
 import typing as t
 import warnings
-from collections import defaultdict
 from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 
-from ICL.eval.collection.data_schema import EvaluationConfig, ModelMetadata
+from ICL import settings
+from ICL.eval.collection.data_schema import (
+    ModelMetadata,
+    determine_training_phase,
+    generate_model_variant_name,
+    load_minimal_model_config,
+)
 from ICL.train.tokenizer import RHMTokenizer
 
 logging.basicConfig(level=logging.INFO)
@@ -18,154 +22,129 @@ logger = logging.getLogger(__name__)
 
 
 class CheckpointManager:
-    """Manages model checkpoint discovery, loading, and metadata extraction."""
+    """Manages model checkpoint discovery with minimal config parsing."""
 
-    def __init__(self, config: EvaluationConfig):
+    def __init__(self, config):
         """Initialize checkpoint manager with evaluation configuration."""
         self.config = config
         self.device = torch.device(config.device)
         self._checkpoint_cache: dict[str, tuple[t.Any, t.Any]] = {}
 
     def discover_checkpoints(self) -> list[ModelMetadata]:
-        """Discover all available checkpoints matching target configurations."""
+        """Discover all available checkpoints for the specified model variant."""
         all_metadata = []
 
-        for checkpoint_dir in self.config.checkpoint_base_dirs:
-            metadata = self._scan_checkpoint_directory(checkpoint_dir)
-            all_metadata.extend(metadata)
+        # Find all checkpoints in the model variant directory
+        if not self.config.model_base_dir.exists():
+            raise FileNotFoundError(f"Model directory not found: {self.config.model_base_dir}")
 
-        # Filter by target configurations and diversity levels
-        # filtered_metadata = self._filter_by_targets(all_metadata)
-        filtered_metadata = all_metadata
-        logger.info(
-            f"Discovered {len(filtered_metadata)} checkpoints across {len(self.config.checkpoint_base_dirs)} directories"
-        )
-        self._print_discovery_summary(filtered_metadata)
+        checkpoint_dirs = self._find_checkpoint_directories(self.config.model_base_dir)
 
-        return filtered_metadata
+        if not checkpoint_dirs:
+            raise FileNotFoundError(f"No checkpoints found in {self.config.model_base_dir}")
 
-    def _scan_checkpoint_directory(self, checkpoint_dir: Path) -> list[ModelMetadata]:
-        """Scan a single checkpoint directory for model files with metadata.json."""
-        metadata_list = []
+        # Load minimal model config to get the essential fields
+        model_config = self._load_model_config_for_variant()
 
-        # Look for metadata.json files in subdirectories
-        metadata_files = list(checkpoint_dir.glob("*/metadata.json"))
+        # Create metadata for each checkpoint
+        max_step = max(self._extract_checkpoint_step(path) for path in checkpoint_dirs)
 
-        if not metadata_files:
-            # Look for metadata.json in the root directory
-            root_metadata = checkpoint_dir / "metadata.json"
-            if root_metadata.exists():
-                metadata_files = [root_metadata]
-
-        for metadata_file in metadata_files:
-            experiment_dir = metadata_file.parent
+        for checkpoint_path in checkpoint_dirs:
             try:
-                # Load metadata from JSON file
-                with open(metadata_file) as f:
-                    metadata_json = json.load(f)
+                checkpoint_step = self._extract_checkpoint_step(checkpoint_path)
+                training_phase = determine_training_phase(checkpoint_step, max_step)
 
-                # Find checkpoint subdirectories in this experiment directory
-                checkpoint_subdirs = self._find_checkpoint_subdirectories(experiment_dir)
+                # Generate model ID
+                model_id = self._generate_model_id(self.config.model_variant, checkpoint_step, checkpoint_path)
 
-                if not checkpoint_subdirs:
-                    warnings.warn(f"No valid checkpoints found in {experiment_dir}")
-                    continue
+                metadata = ModelMetadata(
+                    dataset_type=self.config.dataset_type,
+                    num_seeds=self.config.num_seeds,
+                    seed=self.config.seed,
+                    config_L=self.config.config_L,
+                    config_m=self.config.config_m,
+                    task_name=model_config["task_name"],
+                    model_variant=self.config.model_variant,
+                    shuffle_before_packing=model_config["shuffle_before_packing"],
+                    seed_balanced_batching=model_config["seed_balanced_batching"],
+                    checkpoint_step=checkpoint_step,
+                    checkpoint_path=checkpoint_path,
+                    model_id=model_id,
+                )
 
-                # Create metadata for each checkpoint in this experiment
-                for checkpoint_path in checkpoint_subdirs:
-                    if self._is_valid_checkpoint(checkpoint_path):
-                        try:
-                            metadata = self._extract_checkpoint_metadata(checkpoint_path, metadata_json)
-                            if metadata:
-                                metadata_list.append(metadata)
-                        except Exception as e:
-                            warnings.warn(f"Failed to process checkpoint {checkpoint_path}: {e}")
+                all_metadata.append(metadata)
 
             except Exception as e:
-                warnings.warn(f"Failed to load metadata from {metadata_file}: {e}")
+                warnings.warn(f"Failed to process checkpoint {checkpoint_path}: {e}")
                 continue
 
-        return metadata_list
+        # Sort by checkpoint step
+        all_metadata.sort(key=lambda x: x.checkpoint_step)
 
-    def _find_checkpoint_subdirectories(self, experiment_dir: Path) -> list[Path]:
-        """Find valid checkpoint subdirectories within an experiment directory."""
+        logger.info(f"Discovered {len(all_metadata)} checkpoints for {self.config.model_variant}")
+        self._print_discovery_summary(all_metadata)
+
+        return all_metadata
+
+    def _load_model_config_for_variant(self) -> dict[str, t.Any]:
+        """Load minimal model config for the current variant."""
+        shared_id = (
+            f"{self.config.dataset_type}_{self.config.num_seeds}_L{self.config.config_L}_M{self.config.config_m}"
+        )
+
+        # Determine which config file to load based on model variant
+        # clm_noshuffle_seedbalanced → clm.yaml
+        task_name = self.config.model_variant.split("_")[0]  # "clm" or "mlm"
+        config_file = Path(f"/scratch2/jliu/ICL/conf/{shared_id}/{task_name}.yaml")
+        config_file = settings.PATH.conf_dir / shared_id / f"{task_name}.yaml"
+
+        if not config_file.exists():
+            raise FileNotFoundError(f"Model config file not found: {config_file}")
+
+        model_config = load_minimal_model_config(config_file)
+
+        # Verify that the loaded config generates the expected variant name
+        expected_variant = generate_model_variant_name(model_config)
+        if expected_variant != self.config.model_variant:
+            logger.warning(f"Config mismatch: expected {expected_variant}, got {self.config.model_variant}")
+
+        return model_config
+
+    def _find_checkpoint_directories(self, model_base_dir: Path) -> list[Path]:
+        """Find all checkpoint directories within the model variant directory."""
         checkpoint_patterns = [
-            "checkpoint-*",  # HuggingFace standard: checkpoint-1000
-            "step_*",  # Custom step naming: step_1000
-            "step-*",  # Alternative step naming: step-1000
+            "checkpoint-*",  # Standard HuggingFace format
+            "step_*",  # Alternative naming
+            "step-*",  # Another alternative
         ]
 
         found_checkpoints = []
         for pattern in checkpoint_patterns:
-            found_checkpoints.extend(experiment_dir.glob(pattern))
+            found_checkpoints.extend(model_base_dir.glob(pattern))
 
-        logger.info(f"Found ckpts are {found_checkpoints}")
-        return found_checkpoints
-        # If no pattern matches, check if the experiment_dir itself is a checkpoint
-        # if not found_checkpoints and self._is_valid_checkpoint(experiment_dir):
-        # found_checkpoints = [experiment_dir]
+        # Filter to only directories that look like valid checkpoints
+        valid_checkpoints = []
+        for checkpoint_path in found_checkpoints:
+            if checkpoint_path.is_dir() and self._is_valid_checkpoint(checkpoint_path):
+                valid_checkpoints.append(checkpoint_path)
 
-        # return sorted(found_checkpoints)
+        logger.info(f"Found {len(valid_checkpoints)} valid checkpoints in {model_base_dir}")
+        return sorted(valid_checkpoints)
 
     def _is_valid_checkpoint(self, checkpoint_path: Path) -> bool:
         """Check if path contains a valid model checkpoint."""
-        required_files = ["config.json"]
-        model_files = ["pytorch_model.bin", "model.safetensors", "model.pt"]
-        return True
-        """
-        # Check for config file
-        if not any((checkpoint_path / f).exists() for f in required_files):
+        # Check for essential files
+        config_file = checkpoint_path / "config.json"
+        if not config_file.exists():
             return False
 
-        # Check for model weights
-        return any((checkpoint_path / f).exists() for f in model_files)
-        """
+        # Check for model weights (at least one format)
+        model_files = ["pytorch_model.bin", "model.safetensors", "model.pt", "pytorch_model.safetensors"]
 
-    def _extract_checkpoint_metadata(self, checkpoint_path: Path, metadata_json: dict) -> ModelMetadata | None:
-        """Extract metadata from JSON file for a specific checkpoint."""
-        # Validate required fields in metadata JSON
-        required_fields = ["config_L", "config_m", "n_train", "model_type"]
-        missing_fields = [field for field in required_fields if field not in metadata_json]
+        has_model = any((checkpoint_path / f).exists() for f in model_files)
+        return has_model
 
-        if missing_fields:
-            warnings.warn(f"Missing required fields in metadata: {missing_fields}")
-            return None
-
-        # Extract checkpoint step from path
-        checkpoint_step = self._extract_checkpoint_step_from_path(checkpoint_path)
-        if checkpoint_step is None:
-            warnings.warn(f"Could not extract checkpoint step from path: {checkpoint_path}")
-            return None
-
-        # Validate and extract metadata values
-        try:
-            config_L = int(metadata_json["config_L"])
-            config_m = int(metadata_json["config_m"])
-            n_train = int(metadata_json["n_train"])
-            model_type = str(metadata_json["model_type"])
-
-            if model_type not in ["causal_lm", "mlm"]:
-                warnings.warn(f"Invalid model_type '{model_type}'. Expected 'causal_lm' or 'mlm'")
-                return None
-
-        except (ValueError, TypeError) as e:
-            warnings.warn(f"Invalid metadata values: {e}")
-            return None
-
-        # Generate model ID
-        model_id = self._generate_model_id(config_L, config_m, n_train, checkpoint_step, model_type, checkpoint_path)
-
-        return ModelMetadata(
-            model_id=model_id,
-            config_L=config_L,
-            config_m=config_m,
-            n_train=n_train,
-            checkpoint_step=checkpoint_step,
-            checkpoint_path=checkpoint_path,
-            model_type=model_type,
-        )
-
-    def _extract_checkpoint_step_from_path(self, checkpoint_path: Path) -> int | None:
+    def _extract_checkpoint_step(self, checkpoint_path: Path) -> int:
         """Extract checkpoint step number from checkpoint path."""
         import re
 
@@ -182,18 +161,19 @@ class CheckpointManager:
             if match:
                 return int(match.group(1))
 
+        # If no pattern matches, try to extract any number
+        numbers = re.findall(r"\d+", path_str)
+        if numbers:
+            return int(numbers[-1])  # Take the last number found
+
         # Default to 0 if cannot be determined
+        logger.warning(f"Could not extract step from {path_str}, using step=0")
         return 0
 
-    def _generate_model_id(
-        self, config_L: int, config_m: int, n_train: int, checkpoint_step: int, model_type: str, checkpoint_path: Path
-    ) -> str:
-        """Generate unique model identifier from metadata."""
+    def _generate_model_id(self, model_variant: str, checkpoint_step: int, checkpoint_path: Path) -> str:
+        """Generate unique model identifier."""
         components = [
-            model_type,
-            f"L{config_L}",
-            f"m{config_m}",
-            f"ntrain{n_train}",
+            model_variant,
             f"step{checkpoint_step}",
         ]
 
@@ -203,44 +183,22 @@ class CheckpointManager:
 
         return "_".join(components)
 
-    def _filter_by_targets(self, metadata_list: list[ModelMetadata]) -> list[ModelMetadata]:
-        """Filter checkpoints by target configurations and diversity levels."""
-        if not self.config.target_configs:
-            return metadata_list
-
-        filtered = []
-        for metadata in metadata_list:
-            config = (metadata.config_L, metadata.config_m)
-
-            # Check if config matches targets
-            if config in self.config.target_configs:
-                # Check if diversity level matches
-                if metadata.n_train in self.config.diversity_levels:
-                    # Check if model type matches
-                    if metadata.model_type in self.config.model_types:
-                        filtered.append(metadata)
-
-        return filtered
-
     def _print_discovery_summary(self, metadata_list: list[ModelMetadata]) -> None:
         """Print summary of discovered checkpoints."""
         if not metadata_list:
-            logger.info("No checkpoints found matching criteria")
+            logger.info("No checkpoints found")
             return
 
-        # Group by configuration
-        by_config = defaultdict(list)
-        for meta in metadata_list:
-            key = (meta.config_L, meta.config_m, meta.n_train, meta.model_type)
-            by_config[key].append(meta)
-
+        steps = [meta.checkpoint_step for meta in metadata_list]
         logger.info("\nCheckpoint Discovery Summary:")
         logger.info("-" * 50)
-        for (L, m, n_train, model_type), metas in sorted(by_config.items()):
-            steps = [meta.checkpoint_step for meta in metas]
-            logger.info(
-                f"L={L}, m={m}, N_train={n_train}, {model_type}: {len(steps)} checkpoints (steps: {min(steps)}-{max(steps)})"
-            )
+        logger.info(f"Model variant: {self.config.model_variant}")
+        logger.info(f"Task name: {metadata_list[0].task_name}")
+        logger.info(f"Shuffle before packing: {metadata_list[0].shuffle_before_packing}")
+        logger.info(f"Seed balanced batching: {metadata_list[0].seed_balanced_batching}")
+        logger.info(f"Total checkpoints: {len(steps)}")
+        logger.info(f"Step range: {min(steps)} - {max(steps)}")
+        logger.info(f"Steps: {sorted(steps)}")
 
     def load_model_checkpoint(self, metadata: ModelMetadata, cache: bool = True) -> tuple[t.Any, t.Any]:
         """Load model and tokenizer from checkpoint."""
@@ -260,21 +218,21 @@ class CheckpointManager:
                 else:
                     tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
-            # Load model based on type
-            if metadata.model_type == "causal_lm":
+            # Load model based on task type
+            if metadata.task_name == "clm":
                 model = AutoModelForCausalLM.from_pretrained(
                     metadata.checkpoint_path,
                     trust_remote_code=True,
                     torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
                 )
-            elif metadata.model_type == "mlm":
+            elif metadata.task_name == "mlm":
                 model = AutoModelForMaskedLM.from_pretrained(
                     metadata.checkpoint_path,
                     trust_remote_code=True,
                     torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
                 )
             else:
-                raise ValueError(f"Unsupported model type: {metadata.model_type}")
+                raise ValueError(f"Unsupported task type: {metadata.task_name}")
 
             # Move to device
             model = model.to(self.device)
@@ -293,37 +251,35 @@ class CheckpointManager:
             raise RuntimeError(f"Failed to load checkpoint {metadata.checkpoint_path}: {e}")
 
     def validate_checkpoint_completeness(self, metadata_list: list[ModelMetadata]) -> dict[str, t.Any]:
-        """Validate that we have complete checkpoint coverage."""
+        """Validate checkpoint discovery and provide statistics."""
         validation_results = {
             "total_checkpoints": len(metadata_list),
-            "configs_found": set(),
-            "missing_configs": [],
-            "diversity_coverage": defaultdict(set),
-            "model_type_coverage": defaultdict(set),
+            "model_variant": self.config.model_variant,
+            "step_coverage": {},
+            "training_phases": {},
         }
 
-        # Analyze what we have
+        if not metadata_list:
+            return validation_results
+
+        # Analyze step coverage
+        steps = [meta.checkpoint_step for meta in metadata_list]
+        validation_results["step_coverage"] = {
+            "min_step": min(steps),
+            "max_step": max(steps),
+            "step_count": len(steps),
+            "steps": sorted(steps),
+        }
+
+        # Analyze training phase distribution
+        from collections import defaultdict
+
+        phase_counts = defaultdict(int)
         for meta in metadata_list:
-            config = (meta.config_L, meta.config_m)
-            validation_results["configs_found"].add(config)
-            validation_results["diversity_coverage"][config].add(meta.n_train)
-            validation_results["model_type_coverage"][config].add(meta.model_type)
+            phase = determine_training_phase(meta.checkpoint_step, max(steps))
+            phase_counts[phase] += 1
 
-        # Check for missing target configs
-        for target_config in self.config.target_configs:
-            if target_config not in validation_results["configs_found"]:
-                validation_results["missing_configs"].append(target_config)
-
-        # Check diversity coverage
-        incomplete_diversity = []
-        for config in validation_results["configs_found"]:
-            found_diversity = validation_results["diversity_coverage"][config]
-            expected_diversity = set(self.config.diversity_levels)
-            if not expected_diversity.issubset(found_diversity):
-                missing = expected_diversity - found_diversity
-                incomplete_diversity.append((config, list(missing)))
-
-        validation_results["incomplete_diversity"] = incomplete_diversity
+        validation_results["training_phases"] = dict(phase_counts)
 
         return validation_results
 
@@ -338,3 +294,5 @@ class CheckpointManager:
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+        logger.info("Cleared checkpoint cache")

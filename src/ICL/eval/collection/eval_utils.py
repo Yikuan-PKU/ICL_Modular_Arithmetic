@@ -17,6 +17,10 @@ def extract_target_config_from_sequence(sequence: dict[str, t.Any]) -> tuple[int
         Tuple of (L, m) representing target configuration
 
     """
+    # Try to get from new target_config fields
+    if "target_config_L" in sequence and "target_config_m" in sequence:
+        return (sequence["target_config_L"], sequence["target_config_m"])
+
     # Try to get from sequence metadata if available
     if "target_config" in sequence:
         config = sequence["target_config"]

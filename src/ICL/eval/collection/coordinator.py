@@ -1,4 +1,4 @@
-"""Revised collection coordinator using experiment-based auto-discovery."""
+"""Collection coordinator with minimal model config integration."""
 
 import json
 import logging
@@ -13,19 +13,24 @@ logger = logging.getLogger(__name__)
 
 
 class CollectionCoordinator:
-    """Collection coordinator using experiment-based auto-discovery."""
+    """Collection coordinator with minimal model config integration."""
 
     def __init__(self, config: CollectionConfig):
-        """Initialize coordinator with auto-discovered configuration."""
+        """Initialize coordinator with configuration."""
         self.config = config
         self.setup_logging()
 
     def setup_logging(self) -> None:
         """Setup logging for the collection phase."""
         log_dir = self.config.output_dir / "logs"
+
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        log_file = log_dir / f"collection_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if self.config.batch_mode:
+            log_file = log_dir / f"batch_collection_{timestamp}.log"
+        else:
+            log_file = log_dir / f"collection_{self.config.model_variant}_{self.config.eval_type}_{timestamp}.log"
 
         logging.basicConfig(
             level=logging.INFO,
@@ -40,347 +45,281 @@ class CollectionCoordinator:
         self.logger.info(f"Collection coordinator initialized. Logs: {log_file}")
 
     def validate_setup(self) -> bool:
-        """Validate auto-discovered setup."""
-        self.logger.info("Validating collection setup using auto-discovery...")
+        """Validate setup for batch or single mode."""
+        self.logger.info("Validating collection setup...")
 
         try:
-            # Validate configuration
-            self.config.validate()
-
-            # Log discovered paths
-            self._log_discovery_summary()
-
-            # Validate evaluation dataset format
-            self._validate_evaluation_dataset()
-
-            self.logger.info("Setup validation completed successfully")
-            return True
+            if self.config.batch_mode:
+                return self._validate_batch_setup()
+            return self._validate_single_setup()
 
         except Exception as e:
             self.logger.error(f"Setup validation failed: {e}")
             return False
 
-    def _log_discovery_summary(self) -> None:
-        """Log summary of auto-discovered paths and configuration."""
-        self.logger.info("\nAuto-Discovery Summary:")
-        self.logger.info("-" * 50)
-        self.logger.info(f"Experiment: {self.config.dataset_config.to_base_name()}")
+    def _validate_batch_setup(self) -> bool:
+        """Validate setup for batch mode."""
+        # Discover available combinations
+        combinations = self.config.discover_available_combinations()
+
+        if not combinations:
+            self.logger.error("No valid (model_variant, eval_type) combinations found")
+            return False
+
+        self.logger.info(f"Found {len(combinations)} valid combinations:")
+        for variant, eval_type in combinations:
+            self.logger.info(f"  - {variant} / {eval_type}")
+
+        return True
+
+    def _validate_single_setup(self) -> bool:
+        """Validate setup for single combination mode."""
+        # Validate configuration
+        self.config.validate()
+
+        # Log single combination info
+        self.logger.info("\nSingle Combination Setup:")
+        self.logger.info("-" * 40)
+        self.logger.info(f"Dataset: {self.config.get_shared_identifier()}")
+        self.logger.info(f"Model variant: {self.config.model_variant}")
+        self.logger.info(f"Evaluation type: {self.config.eval_type}")
         self.logger.info(f"Evaluation dataset: {self.config.eval_dataset_path}")
-        self.logger.info(f"Checkpoint directories: {len(self.config.checkpoint_dirs)}")
-        for i, checkpoint_dir in enumerate(self.config.checkpoint_dirs):
-            self.logger.info(f"  {i + 1}. {checkpoint_dir}")
-        self.logger.info(f"Collection config: {self.config.config_file_path}")
+        self.logger.info(f"Model directory: {self.config.model_base_dir}")
         self.logger.info(f"Output directory: {self.config.output_dir}")
-        self.logger.info(f"Target configurations: {len(self.config.target_configs)}")
-        self.logger.info(f"Context sizes: {self.config.context_sizes}")
-        self.logger.info(f"Transfer conditions: {self.config.transfer_conditions}")
 
-    def list_discovered_checkpoints(self) -> dict[str, t.Any]:
-        """List all discovered model checkpoints."""
-        checkpoint_info = {"total_directories": len(self.config.checkpoint_dirs), "checkpoints": []}
+        # Validate HuggingFace dataset format
+        self._validate_evaluation_dataset()
 
-        for checkpoint_dir in self.config.checkpoint_dirs:
-            dir_info = {
-                "directory": str(checkpoint_dir),
-                "exists": checkpoint_dir.exists(),
-                "subdirs": [],
-                "metadata_files": [],
-            }
-
-            if checkpoint_dir.exists():
-                # Find checkpoint subdirectories
-                for subdir in checkpoint_dir.iterdir():
-                    if subdir.is_dir():
-                        subdir_info = {
-                            "name": subdir.name,
-                            "path": str(subdir),
-                            "has_config": (subdir / "config.json").exists(),
-                            "has_metadata": (subdir / "metadata.json").exists(),
-                            "has_model": any(
-                                (subdir / f).exists() for f in ["pytorch_model.bin", "model.safetensors", "model.pt"]
-                            ),
-                        }
-                        dir_info["subdirs"].append(subdir_info)
-
-                # Find metadata files
-                metadata_files = list(checkpoint_dir.glob("*/metadata.json"))
-                dir_info["metadata_files"] = [str(f) for f in metadata_files]
-
-            checkpoint_info["checkpoints"].append(dir_info)
-
-        return checkpoint_info
+        return True
 
     def _validate_evaluation_dataset(self) -> None:
         """Validate the evaluation dataset format."""
         if not self.config.eval_dataset_path.exists():
             raise FileNotFoundError(f"Evaluation dataset not found: {self.config.eval_dataset_path}")
 
-        # Check if it's HuggingFace dataset format
+        # Check if it's a HuggingFace dataset directory
         if self.config.eval_dataset_path.is_dir():
-            # HuggingFace format
-            required_files = ["dataset_info.json"]
-            missing_files = [f for f in required_files if not (self.config.eval_dataset_path / f).exists()]
+            # Check for HuggingFace dataset files
+            required_hf_files = ["dataset_info.json"]
+            missing_files = [f for f in required_hf_files if not (self.config.eval_dataset_path / f).exists()]
             if missing_files:
                 self.logger.warning(f"HuggingFace dataset may be incomplete, missing: {missing_files}")
-
-        # Check if it's JSON format
-        elif self.config.eval_dataset_path.suffix == ".json":
-            with open(self.config.eval_dataset_path) as f:
-                dataset = json.load(f)
-
-            # Check required top-level keys
-            required_keys = ["metadata", "conditions"]
-            for key in required_keys:
-                if key not in dataset:
-                    raise ValueError(f"Missing required key in evaluation dataset: {key}")
-
         else:
-            raise ValueError(f"Unknown evaluation dataset format: {self.config.eval_dataset_path}")
+            raise ValueError(f"Expected HuggingFace dataset directory, got: {self.config.eval_dataset_path}")
 
         self.logger.info("Evaluation dataset format validation passed")
 
+    def list_available_combinations(self) -> dict[str, t.Any]:
+        """List all available (model_variant, eval_type) combinations."""
+        combinations = self.config.discover_available_combinations()
+
+        combination_info = {
+            "shared_identifier": self.config.get_shared_identifier(),
+            "total_combinations": len(combinations),
+            "combinations": [],
+        }
+
+        for variant, eval_type in combinations:
+            # Get additional info for each combination
+            if self.config.batch_mode:
+                from ICL.settings import PATH
+
+                shared_id = self.config.get_shared_identifier()
+                model_dir = PATH.model_dir / shared_id / variant
+                eval_dataset_path = PATH.dataset_root / shared_id / "eval" / eval_type / "dataset"
+            else:
+                model_dir = (
+                    self.config.model_base_dir.parent / variant
+                    if self.config.batch_mode
+                    else self.config.model_base_dir
+                )
+                eval_dataset_path = (
+                    self.config.eval_dataset_path.parent.parent / eval_type / "dataset"
+                    if not self.config.batch_mode
+                    else None
+                )
+
+            # Count checkpoints
+            checkpoint_count = 0
+            if model_dir.exists():
+                checkpoint_dirs = [d for d in model_dir.iterdir() if d.is_dir() and "checkpoint" in d.name.lower()]
+                checkpoint_count = len(checkpoint_dirs)
+
+            combo_info = {
+                "model_variant": variant,
+                "eval_type": eval_type,
+                "model_dir": str(model_dir),
+                "eval_dataset_path": str(eval_dataset_path),
+                "model_dir_exists": model_dir.exists(),
+                "eval_dataset_exists": eval_dataset_path.exists() if eval_dataset_path else False,
+                "checkpoint_count": checkpoint_count,
+            }
+
+            combination_info["combinations"].append(combo_info)
+
+        return combination_info
+
     def run_collection_pipeline(self) -> dict[str, t.Any]:
-        """Run the collection pipeline using auto-discovered configuration."""
-        self.logger.info("Starting ICL evaluation collection pipeline with auto-discovery")
+        """Run the collection pipeline in batch or single mode."""
+        if self.config.batch_mode:
+            return self._run_batch_collection()
+        return self._run_single_collection()
+
+    def _run_batch_collection(self) -> dict[str, t.Any]:
+        """Run collection for all available combinations."""
+        self.logger.info("Starting batch collection pipeline")
+
+        combinations = self.config.discover_available_combinations()
+        if not combinations:
+            raise RuntimeError("No valid combinations found for batch collection")
+
+        batch_results = {
+            "shared_identifier": self.config.get_shared_identifier(),
+            "start_time": datetime.now(),
+            "total_combinations": len(combinations),
+            "completed_combinations": [],
+            "failed_combinations": [],
+            "combination_results": {},
+        }
+
+        for i, (variant, eval_type) in enumerate(combinations, 1):
+            self.logger.info(f"\n{'=' * 60}")
+            self.logger.info(f"BATCH COLLECTION [{i}/{len(combinations)}]")
+            self.logger.info(f"Model variant: {variant}")
+            self.logger.info(f"Evaluation type: {eval_type}")
+            self.logger.info(f"{'=' * 60}")
+
+            try:
+                # Create single config for this combination
+                single_config = self.config.create_single_config(variant, eval_type)
+
+                # Run single collection
+                single_coordinator = CollectionCoordinator(single_config)
+                if not single_coordinator.validate_setup():
+                    raise RuntimeError(f"Setup validation failed for {variant}/{eval_type}")
+
+                results = single_coordinator._run_single_collection()
+
+                # Record success
+                batch_results["completed_combinations"].append((variant, eval_type))
+                batch_results["combination_results"][f"{variant}_{eval_type}"] = results
+
+                self.logger.info(f"✓ Completed {variant}/{eval_type}")
+
+            except Exception as e:
+                self.logger.error(f"✗ Failed {variant}/{eval_type}: {e}")
+                batch_results["failed_combinations"].append((variant, eval_type, str(e)))
+
+                # Continue with next combination
+                continue
+
+        # Generate batch summary
+        batch_results["end_time"] = datetime.now()
+        batch_results["duration"] = batch_results["end_time"] - batch_results["start_time"]
+        batch_results["success_count"] = len(batch_results["completed_combinations"])
+        batch_results["failure_count"] = len(batch_results["failed_combinations"])
+
+        # Save batch summary
+        summary_path = self.config.output_dir / "batch_collection_summary.json"
+        with open(summary_path, "w") as f:
+            json.dump(batch_results, f, indent=2, default=str)
+
+        self.logger.info(
+            f"\nBatch collection completed: {batch_results['success_count']}/{batch_results['total_combinations']} successful"
+        )
+        self.logger.info(f"Batch summary saved: {summary_path}")
+
+        return batch_results
+
+    def _run_single_collection(self) -> dict[str, t.Any]:
+        """Run collection for a single (model_variant, eval_type) combination."""
+        self.logger.info("Starting single combination collection pipeline")
 
         try:
-            # Check if we need to convert HuggingFace dataset to JSON format
-            eval_dataset_path = self.config.eval_dataset_path
+            # Convert to legacy format for evaluator
+            legacy_config = self._create_legacy_config()
 
-            if self.config.eval_dataset_path.is_dir():
-                self.logger.info("Converting HuggingFace dataset to JSON format for evaluator...")
-                eval_dataset_path = self._convert_hf_dataset_to_json()
-                self.logger.info(f"Using JSON dataset: {eval_dataset_path}")
-            else:
-                self.logger.info(f"Using existing JSON dataset: {eval_dataset_path}")
-
-            # Create legacy config with correct path
-            legacy_config = self._create_legacy_config_with_path(eval_dataset_path)
-
-            # Create enhanced evaluator with converted config
+            # Create and run evaluator
             evaluator = CollectionEvaluator(legacy_config)
-
-            # Run comprehensive collection
             results = evaluator.run_comprehensive_collection()
 
-            self.logger.info("Collection pipeline completed successfully")
+            self.logger.info("Single collection completed successfully")
             return results
 
         except Exception as e:
-            self.logger.error(f"Collection pipeline failed: {e}")
+            self.logger.error(f"Single collection failed: {e}")
             raise
 
-    def _create_legacy_config_with_path(self, eval_dataset_path):
-        """Convert new CollectionConfig to legacy format with specific dataset path."""
-        # Create output structure here since we have the method
-        self.config.create_output_structure()
-
-        # Import the legacy EvaluationConfig
-        from ICL.eval.collection.data_schema import EvaluationConfig
-
-        # Create legacy config with the correct eval dataset path
-        legacy_config = EvaluationConfig(
-            checkpoint_base_dirs=self.config.checkpoint_dirs,
-            eval_dataset_path=eval_dataset_path,  # Use the provided path
-            output_dir=self.config.output_dir,
-            context_sizes=self.config.context_sizes,
-            transfer_conditions=self.config.transfer_conditions,
-            control_types=self.config.control_types,
-            target_configs=self.config.target_configs,
-            diversity_levels=self.config.diversity_levels,
-            model_types=self.config.model_types,
-            device=self.config.device,
-            batch_size=self.config.batch_size,
-            max_sequences_per_condition=self.config.max_sequences_per_condition,
-            capture_attention=self.config.capture_attention,
-            save_intermediate=self.config.save_intermediate,
-            overwrite_existing=self.config.overwrite,
-        )
-
-        # Add missing attributes that the evaluator expects
-        legacy_config.create_output_structure = lambda: None  # No-op since we already created it
-        legacy_config.resume = self.config.resume  # Add missing resume attribute
-        legacy_config.intermediate_save_frequency = getattr(self.config, "intermediate_save_frequency", 5)
-        legacy_config.clear_cache_frequency = getattr(self.config, "clear_cache_frequency", 10)
-        legacy_config.max_memory_usage_gb = getattr(self.config, "max_memory_usage_gb", 12.0)
-        legacy_config.max_model_failures = getattr(self.config, "max_model_failures", 5)
-        legacy_config.retry_failed_models = getattr(self.config, "retry_failed_models", True)
-        legacy_config.failure_retry_delay = getattr(self.config, "failure_retry_delay", 60)
-
-        return legacy_config
-
-    def _convert_hf_dataset_to_json(self) -> Path:
-        """Convert HuggingFace dataset to JSON format expected by evaluator."""
-        import json
-
-        from datasets import load_from_disk
-
-        # Load HuggingFace dataset
-        hf_dataset = load_from_disk(str(self.config.eval_dataset_path))
-
-        # Create JSON output path
-        json_path = self.config.eval_dataset_path.parent / "evaluation_dataset.json"
-
-        if json_path.exists():
-            self.logger.info(f"JSON dataset already exists: {json_path}")
-            return json_path
-
-        self.logger.info(f"Converting HuggingFace dataset to JSON: {json_path}")
-
-        # Convert to the expected JSON format
-        # Group sequences by transfer condition and other criteria
-        sequences_by_condition = {}
-
-        for i, example in enumerate(hf_dataset):
-            transfer_condition = example.get("transfer_condition", "unknown")
-            control_type = example.get("control_type", "normal")
-            config_L = example.get("config_L", 2)
-            config_m = example.get("config_m", 2)
-
-            if transfer_condition not in sequences_by_condition:
-                sequences_by_condition[transfer_condition] = []
-
-            # Convert to expected sequence format
-            sequence = {
-                "context_features": example.get("context_features", []),
-                "context_labels": example.get("context_labels", []),
-                "query_features": example.get("query_features", []),
-                "query_label": example.get("query_label", 0),
-                "context_size": example.get("context_size", 1),
-                "sequence_id": i,
-                "config": [config_L, config_m],
-                "transfer_condition": transfer_condition,
-                "control_type": control_type,
-            }
-
-            sequences_by_condition[transfer_condition].append(sequence)
-
-        # Create the expected JSON structure
-        json_data = {
-            "metadata": {
-                "dataset_type": self.config.dataset_config.dataset_type,
-                "mixture_type": self.config.dataset_config.mixture_type,
-                "total_rules": self.config.dataset_config.total_rules,
-                "seed": self.config.dataset_config.seed,
-                "total_sequences": len(hf_dataset),
-                "conversion_timestamp": datetime.now().isoformat(),
-            },
-            "conditions": {},
-        }
-
-        # Organize conditions in the expected format
-        for condition, sequences in sequences_by_condition.items():
-            if condition == "within_config":
-                # Group by config
-                config_groups = {}
-                for seq in sequences:
-                    config_key = tuple(seq["config"])
-                    if config_key not in config_groups:
-                        config_groups[config_key] = []
-                    config_groups[config_key].append(seq)
-
-                json_data["conditions"][condition] = []
-                for config, config_sequences in config_groups.items():
-                    # Group by context size
-                    sequences_by_k = {}
-                    for seq in config_sequences:
-                        k = seq["context_size"]
-                        if k not in sequences_by_k:
-                            sequences_by_k[k] = []
-                        sequences_by_k[k].append(seq)
-
-                    json_data["conditions"][condition].append({"config": list(config), "sequences": sequences_by_k})
-
-            else:
-                # For transfer conditions, group differently
-                config_groups = {}
-                for seq in sequences:
-                    config_key = tuple(seq["config"])
-                    if config_key not in config_groups:
-                        config_groups[config_key] = []
-                    config_groups[config_key].append(seq)
-
-                json_data["conditions"][condition] = {}
-                for config, config_sequences in config_groups.items():
-                    config_str = f"{config[0]}_{config[1]}"
-
-                    # Group by context size
-                    sequences_by_k = {}
-                    for seq in config_sequences:
-                        k = seq["context_size"]
-                        if k not in sequences_by_k:
-                            sequences_by_k[k] = []
-                        sequences_by_k[k].append(seq)
-
-                    json_data["conditions"][condition][config_str] = [
-                        {"config": list(config), "sequences": sequences_by_k}
-                    ]
-
-        # Save JSON file
-        with open(json_path, "w") as f:
-            json.dump(json_data, f, indent=2)
-
-        self.logger.info(f"Successfully converted to JSON format: {json_path}")
-        return json_path
-
     def _create_legacy_config(self):
-        """Convert new CollectionConfig to legacy format for evaluator."""
-        # Create output structure here since we have the method
-        self.config.create_output_structure()
+        """Convert CollectionConfig to legacy format for evaluator."""
 
-        # Import the legacy EvaluationConfig
-        from ICL.eval.collection.data_schema import EvaluationConfig
+        # Simple object to hold config data
+        class LegacyConfig:
+            pass
 
-        # Create legacy config
-        legacy_config = EvaluationConfig(
-            checkpoint_base_dirs=self.config.checkpoint_dirs,
-            eval_dataset_path=self.config.eval_dataset_path,
-            output_dir=self.config.output_dir,
-            context_sizes=self.config.context_sizes,
-            transfer_conditions=self.config.transfer_conditions,
-            control_types=self.config.control_types,
-            target_configs=self.config.target_configs,
-            diversity_levels=self.config.diversity_levels,
-            model_types=self.config.model_types,
-            device=self.config.device,
-            batch_size=self.config.batch_size,
-            max_sequences_per_condition=self.config.max_sequences_per_condition,
-            capture_attention=self.config.capture_attention,
-            save_intermediate=self.config.save_intermediate,
-            overwrite_existing=self.config.overwrite,
-        )
+        legacy_config = LegacyConfig()
 
-        # Add the missing method to the legacy config
-        legacy_config.create_output_structure = lambda: None  # No-op since we already created it
+        # Core identification
+        legacy_config.dataset_type = self.config.dataset_type
+        legacy_config.num_seeds = self.config.num_seeds
+        legacy_config.seed = self.config.seed
+        legacy_config.config_L = self.config.config_L
+        legacy_config.config_m = self.config.config_m
+
+        # Model and evaluation
+        legacy_config.model_variant = self.config.model_variant
+        legacy_config.eval_type = self.config.eval_type
+
+        # Paths
+        legacy_config.eval_dataset_path = self.config.eval_dataset_path
+        legacy_config.model_base_dir = self.config.model_base_dir
+        legacy_config.output_dir = self.config.output_dir
+
+        # Evaluation parameters
+        legacy_config.context_sizes = self.config.context_sizes
+        legacy_config.control_types = self.config.control_types
+        legacy_config.device = self.config.device
+        legacy_config.batch_size = self.config.batch_size
+        legacy_config.max_sequences_per_condition = self.config.max_sequences_per_condition
+        legacy_config.capture_attention = self.config.capture_attention
+        legacy_config.save_intermediate = self.config.save_intermediate
+
+        # Methods
+        legacy_config.validate = lambda: self.config.validate()
+        legacy_config.create_output_structure = lambda: self.config.create_output_structure()
+        legacy_config.get_shared_identifier = lambda: self.config.get_shared_identifier()
+        legacy_config.get_resume_path = lambda: self.config.get_resume_path()
+        legacy_config.to_dict = lambda: self.config.to_dict()
+
+        # Additional attributes that evaluator expects
+        legacy_config.resume = self.config.resume
+        legacy_config.intermediate_save_frequency = self.config.intermediate_save_frequency
+        legacy_config.clear_cache_frequency = self.config.clear_cache_frequency
+        legacy_config.max_memory_usage_gb = self.config.max_memory_usage_gb
+        legacy_config.max_model_failures = self.config.max_model_failures
+        legacy_config.retry_failed_models = self.config.retry_failed_models
+        legacy_config.failure_retry_delay = self.config.failure_retry_delay
 
         return legacy_config
 
     def generate_collection_summary(self, results: dict[str, t.Any]) -> Path:
-        """Generate comprehensive summary including auto-discovery info."""
+        """Generate collection summary for single combination."""
         summary_path = self.config.output_dir / "collection_summary.json"
 
         summary = {
-            "experiment_info": {
-                "dataset_type": self.config.dataset_config.dataset_type,
-                "mixture_type": self.config.dataset_config.mixture_type,
-                "total_rules": self.config.dataset_config.total_rules,
-                "seed": self.config.dataset_config.seed,
-                "experiment_name": self.config.dataset_config.to_base_name(),
-            },
-            "auto_discovery": {
-                "eval_dataset_path": str(self.config.eval_dataset_path),
-                "checkpoint_dirs": [str(d) for d in self.config.checkpoint_dirs],
-                "config_file_path": str(self.config.config_file_path),
-                "config_file_exists": self.config.config_file_path.exists(),
-            },
+            "shared_identifier": self.config.get_shared_identifier(),
+            "model_variant": self.config.model_variant,
+            "eval_type": self.config.eval_type,
             "collection_config": self.config.to_dict(),
             "results": results,
             "output_files": {
                 "icl_performance": "raw_evaluations/icl_performance.parquet",
                 "model_registry": "metadata/model_registry.parquet",
-                "attention_data": "raw_evaluations/attention_data/",
+                "attention_data": "raw_evaluations/attention_data/" if self.config.capture_attention else None,
                 "logs": "logs/",
-                "intermediate_results": "intermediate/partial_results.parquet",
+                "intermediate_results": "intermediate/partial_results.parquet"
+                if self.config.save_intermediate
+                else None,
             },
             "collection_statistics": {
                 "total_evaluations": results.get("total_evaluations", 0),
@@ -389,20 +328,6 @@ class CollectionCoordinator:
                 "failed_models": results.get("failed_models", 0),
                 "success_rate": (results.get("completed_models", 0) / max(results.get("total_models", 1), 1) * 100),
             },
-            "next_steps": [
-                "# Analysis Phase Commands:",
-                "# 1. Load collected data:",
-                "import pandas as pd",
-                f"df = pd.read_parquet('{self.config.output_dir}/raw_evaluations/icl_performance.parquet')",
-                f"model_registry = pd.read_parquet('{self.config.output_dir}/metadata/model_registry.parquet')",
-                "",
-                "# 2. Run analysis phase:",
-                f"# python run_analysis.py --dataset-type {self.config.dataset_config.dataset_type} "
-                f"--mixture-type {self.config.dataset_config.mixture_type} "
-                f"--total-rules {self.config.dataset_config.total_rules} "
-                f"--seed {self.config.dataset_config.seed} "
-                f"--data-dir {self.config.output_dir}/raw_evaluations/",
-            ],
         }
 
         with open(summary_path, "w") as f:
@@ -412,16 +337,25 @@ class CollectionCoordinator:
         return summary_path
 
 
-def run_collection_phase_auto(
-    dataset_type: str, mixture_type: str, total_rules: int, seed: int, device: str = "cuda", **kwargs
+def run_collection_phase(
+    dataset_type: str,
+    num_seeds: int,
+    seed: int,
+    model_variant: str | None = None,
+    eval_type: str | None = None,
+    batch_mode: bool = False,
+    device: str = "cuda",
+    **kwargs,
 ) -> dict[str, t.Any]:
-    """High-level function to run collection phase with auto-discovery."""
-    # Create configuration using auto-discovery
-    config = CollectionConfig.from_experiment_args(
+    """High-level function to run collection phase with training script style."""
+    # Create configuration
+    config = CollectionConfig.from_args(
         dataset_type=dataset_type,
-        mixture_type=mixture_type,
-        total_rules=total_rules,
+        num_seeds=num_seeds,
         seed=seed,
+        model_variant=model_variant,
+        eval_type=eval_type,
+        batch_mode=batch_mode,
         device=device,
         **kwargs,
     )
@@ -436,12 +370,17 @@ def run_collection_phase_auto(
     # Run collection pipeline
     results = coordinator.run_collection_pipeline()
 
-    # Generate summary
-    summary_path = coordinator.generate_collection_summary(results)
-
-    print("\nCollection completed successfully!")
-    print(f"Experiment: {config.dataset_config.to_base_name()}")
-    print(f"Results: {config.output_dir}")
-    print(f"Summary: {summary_path}")
+    if not batch_mode:
+        # Generate summary for single mode
+        summary_path = coordinator.generate_collection_summary(results)
+        print("\nCollection completed successfully!")
+        print(f"Combination: {model_variant}/{eval_type}")
+        print(f"Results: {config.output_dir}")
+        print(f"Summary: {summary_path}")
+    else:
+        print("\nBatch collection completed!")
+        print(f"Dataset: {config.get_shared_identifier()}")
+        print(f"Results: {config.output_dir}")
+        print(f"Summary: {config.output_dir}/batch_collection_summary.json")
 
     return results

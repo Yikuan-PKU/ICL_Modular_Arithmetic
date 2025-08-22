@@ -1,4 +1,4 @@
-"""Enhanced evaluator for collection phase with resume capabilities."""
+"""Enhanced evaluator with minimal model config integration."""
 
 import json
 import logging
@@ -14,17 +14,15 @@ import torch
 from tqdm import tqdm
 
 from ICL.eval.collection.ckpt_manager import CheckpointManager
-from ICL.eval.collection.collection_config import CollectionConfig
 from ICL.eval.collection.data_schema import (
     AttentionRecord,
     DataSchemaManager,
     ICLPerformanceRecord,
     ModelMetadata,
-    create_evaluation_manifest,
+    determine_training_phase,
 )
 from ICL.eval.collection.eval_utils import (
     create_control_sequence,
-    extract_target_config_from_sequence,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,9 +64,9 @@ class CollectionProgress:
 
 
 class CollectionEvaluator:
-    """Enhanced evaluator with resume capabilities and better error handling."""
+    """Enhanced evaluator with minimal model config integration."""
 
-    def __init__(self, config: CollectionConfig):
+    def __init__(self, config):
         """Initialize enhanced evaluator."""
         self.config = config
         self.config.validate()
@@ -106,102 +104,111 @@ class CollectionEvaluator:
         logger.info(f"Collection evaluator initialized. Logs: {log_file}")
 
     def load_evaluation_dataset(self) -> dict[str, t.Any]:
-        """Load evaluation dataset and validate structure."""
+        """Load HuggingFace evaluation dataset and convert to internal format."""
         logger.info(f"Loading evaluation dataset from {self.config.eval_dataset_path}")
 
-        with open(self.config.eval_dataset_path) as f:
-            dataset = json.load(f)
+        from datasets import load_from_disk
 
-        self.evaluation_dataset = dataset
+        # Load HuggingFace dataset
+        hf_dataset = load_from_disk(str(self.config.eval_dataset_path))
 
-        # Validate dataset structure
-        self._validate_dataset_structure(dataset)
+        # Convert to internal JSON format
+        converted_dataset = self._convert_hf_to_internal_format(hf_dataset)
+
+        self.evaluation_dataset = converted_dataset
 
         # Print dataset summary
-        conditions = dataset.get("conditions", {})
-        logger.info(f"Loaded evaluation dataset with {len(conditions)} conditions")
-        for condition_name, condition_data in conditions.items():
-            if isinstance(condition_data, list):
-                logger.info(f"  {condition_name}: {len(condition_data)} models")
-            elif isinstance(condition_data, dict):
-                total_models = sum(len(models) for models in condition_data.values())
-                logger.info(f"  {condition_name}: {len(condition_data)} configs, {total_models} total models")
+        total_sequences = len(hf_dataset)
+        logger.info(
+            f"Loaded evaluation dataset with {total_sequences} sequences for eval_type: {self.config.eval_type}"
+        )
 
-        return dataset
+        return converted_dataset
 
-    def _validate_dataset_structure(self, dataset: dict[str, t.Any]) -> None:
-        """Validate evaluation dataset structure."""
-        required_keys = ["metadata", "conditions"]
-        for key in required_keys:
-            if key not in dataset:
-                raise ValueError(f"Missing required key in evaluation dataset: {key}")
+    def _convert_hf_to_internal_format(self, hf_dataset) -> dict[str, t.Any]:
+        """Convert HuggingFace dataset to internal JSON format."""
+        # Group sequences by context size for easier access
+        sequences_by_k = defaultdict(list)
 
-        # Check conditions structure
-        conditions = dataset["conditions"]
-        expected_conditions = ["within_config", "depth_transfer", "synonym_transfer", "full_transfer"]
+        for i, example in enumerate(hf_dataset):
+            # Extract sequence data
+            sequence = {
+                "context_features": example.get("context_features", []),
+                "context_labels": example.get("context_labels", []),
+                "query_features": example.get("query_features", []),
+                "query_label": example.get("query_label", 0),
+                "context_size": example.get("context_size", len(example.get("context_features", []))),
+                "sequence_id": i,
+                # Evaluation type tracking
+                "eval_type": self.config.eval_type,
+                "appears_in_training": self._determine_training_appearance(example, self.config.eval_type),
+                "source_seeds": example.get("source_seeds", []),
+                # Target configuration
+                "target_config_L": example.get("target_config_L", self.config.config_L),
+                "target_config_m": example.get("target_config_m", self.config.config_m),
+            }
 
-        missing_conditions = [cond for cond in expected_conditions if cond not in conditions]
-        if missing_conditions:
-            logger.warning(f"Missing evaluation conditions: {missing_conditions}")
+            context_size = sequence["context_size"]
+            sequences_by_k[context_size].append(sequence)
+
+        # Create internal format
+        converted_dataset = {
+            "metadata": {
+                "dataset_type": self.config.dataset_type,
+                "num_seeds": self.config.num_seeds,
+                "seed": self.config.seed,
+                "config_L": self.config.config_L,
+                "config_m": self.config.config_m,
+                "eval_type": self.config.eval_type,
+                "model_variant": self.config.model_variant,
+                "total_sequences": len(hf_dataset),
+                "conversion_timestamp": datetime.now().isoformat(),
+            },
+            "sequences": dict(sequences_by_k),
+        }
+
+        return converted_dataset
+
+    def _determine_training_appearance(self, example: dict, eval_type: str) -> bool:
+        """Determine if sequence appeared in training based on eval_type."""
+        if eval_type == "memorization":
+            return True
+        if eval_type in ["id_generalization", "ood_same_rule", "ood_transfer"]:
+            return False
+        # Check if explicitly marked in the dataset
+        return example.get("appears_in_training", False)
 
     def discover_and_validate_checkpoints(self) -> list[ModelMetadata]:
-        """Discover and validate checkpoints with filtering."""
-        logger.info("Discovering model checkpoints...")
+        """Discover and validate checkpoints for the model variant."""
+        logger.info(f"Discovering checkpoints for model variant: {self.config.model_variant}")
 
         all_metadata = self.checkpoint_manager.discover_checkpoints()
 
         if not all_metadata:
-            raise RuntimeError("No valid checkpoints found")
-
-        # Filter by target configurations and diversity levels
-        filtered_metadata = self._filter_checkpoints(all_metadata)
-
-        if not filtered_metadata:
-            raise RuntimeError("No checkpoints match the target configurations")
+            raise RuntimeError(f"No valid checkpoints found for {self.config.model_variant}")
 
         # Validate completeness
-        validation_results = self.checkpoint_manager.validate_checkpoint_completeness(filtered_metadata)
+        validation_results = self.checkpoint_manager.validate_checkpoint_completeness(all_metadata)
         self._log_validation_results(validation_results)
 
-        return filtered_metadata
-
-    def _filter_checkpoints(self, metadata_list: list[ModelMetadata]) -> list[ModelMetadata]:
-        """Filter checkpoints by target configurations and settings."""
-        filtered = []
-
-        for metadata in metadata_list:
-            config = (metadata.config_L, metadata.config_m)
-
-            # Check target configurations
-            if self.config.target_configs and config not in self.config.target_configs:
-                continue
-
-            # Check diversity levels
-            if metadata.n_train not in self.config.diversity_levels:
-                continue
-
-            # Check model types
-            if metadata.model_type not in self.config.model_types:
-                continue
-
-            filtered.append(metadata)
-
-        logger.info(f"Filtered {len(metadata_list)} -> {len(filtered)} checkpoints based on target configs")
-        return filtered
+        return all_metadata
 
     def _log_validation_results(self, validation_results: dict[str, t.Any]) -> None:
         """Log checkpoint validation results."""
         logger.info("\nCheckpoint Validation Results:")
+        logger.info(f"  Model variant: {validation_results['model_variant']}")
         logger.info(f"  Total checkpoints: {validation_results['total_checkpoints']}")
-        logger.info(f"  Configs found: {len(validation_results['configs_found'])}")
 
-        if validation_results["missing_configs"]:
-            logger.warning(f"  Missing configs: {validation_results['missing_configs']}")
+        step_coverage = validation_results.get("step_coverage", {})
+        if step_coverage:
+            logger.info(f"  Step range: {step_coverage['min_step']} - {step_coverage['max_step']}")
+            logger.info(f"  Step count: {step_coverage['step_count']}")
 
-        if validation_results["incomplete_diversity"]:
-            logger.warning("  Incomplete diversity coverage:")
-            for config, missing in validation_results["incomplete_diversity"]:
-                logger.warning(f"    {config}: missing {missing}")
+        training_phases = validation_results.get("training_phases", {})
+        if training_phases:
+            logger.info("  Training phase distribution:")
+            for phase, count in training_phases.items():
+                logger.info(f"    {phase}: {count} checkpoints")
 
     def check_resume_capability(self, checkpoint_metadata: list[ModelMetadata]) -> bool:
         """Check if we can resume from previous run."""
@@ -223,7 +230,6 @@ class CollectionEvaluator:
                 import pandas as pd
 
                 df = pd.read_parquet(results_path)
-                # Convert back to records (simplified - would need full conversion)
                 logger.info(f"Loaded {len(df)} existing evaluation results")
 
             logger.info(f"Resuming from model {self.progress.current_model_idx}/{self.progress.total_models}")
@@ -253,9 +259,14 @@ class CollectionEvaluator:
         start_time = datetime.now()
 
         logger.info("=" * 80)
-        logger.info("STARTING COMPREHENSIVE ICL COLLECTION")
+        logger.info("STARTING ICL COLLECTION FOR SINGLE EVAL TYPE")
         logger.info("=" * 80)
         logger.info(f"Start time: {start_time}")
+        logger.info(
+            f"Dataset: {self.config.dataset_type}_{self.config.num_seeds}_L{self.config.config_L}_M{self.config.config_m}"
+        )
+        logger.info(f"Model variant: {self.config.model_variant}")
+        logger.info(f"Evaluation type: {self.config.eval_type}")
         logger.info(f"Output directory: {self.config.output_dir}")
         logger.info(f"Device: {self.config.device}")
 
@@ -268,7 +279,7 @@ class CollectionEvaluator:
 
         # Check for resume capability
         resumed = False
-        if self.config.resume:
+        if hasattr(self.config, "resume") and self.config.resume:
             resumed = self.check_resume_capability(checkpoint_metadata)
 
         if not resumed:
@@ -276,7 +287,7 @@ class CollectionEvaluator:
             self.progress = CollectionProgress(total_models=len(checkpoint_metadata))
 
         # Create evaluation manifest
-        manifest = create_evaluation_manifest(self.config, start_time)
+        manifest = self._create_evaluation_manifest(start_time)
         manifest_path = self.config.output_dir / "metadata" / "experiment_manifest.json"
         with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
@@ -335,13 +346,43 @@ class CollectionEvaluator:
             "output_dir": self.config.output_dir,
         }
 
+    def _create_evaluation_manifest(self, start_time: datetime) -> dict[str, t.Any]:
+        """Create evaluation manifest with minimal config tracking."""
+        return {
+            "experiment_id": f"{self.config.get_shared_identifier()}_{self.config.model_variant}_{self.config.eval_type}_{start_time.strftime('%Y%m%d_%H%M%S')}",
+            "dataset_type": self.config.dataset_type,
+            "num_seeds": self.config.num_seeds,
+            "seed": self.config.seed,
+            "config_L": self.config.config_L,
+            "config_m": self.config.config_m,
+            "model_variant": self.config.model_variant,
+            "eval_type": self.config.eval_type,
+            "start_time": start_time.isoformat(),
+            "end_time": None,
+            "status": "running",
+            "config": {
+                "context_sizes": self.config.context_sizes,
+                "control_types": self.config.control_types,
+                "device": self.config.device,
+                "batch_size": self.config.batch_size,
+                "max_sequences_per_condition": self.config.max_sequences_per_condition,
+                "capture_attention": self.config.capture_attention,
+            },
+            "data_schema_version": "3.0",
+            "output_files": {
+                "icl_performance": "raw_evaluations/icl_performance.parquet",
+                "model_registry": "metadata/model_registry.parquet",
+                "attention_data": "raw_evaluations/attention_data/" if self.config.capture_attention else None,
+            },
+        }
+
     def _run_evaluation_loop(self, checkpoint_metadata: list[ModelMetadata], eval_dataset: dict[str, t.Any]) -> None:
         """Run the main evaluation loop with error handling."""
         models_to_evaluate = checkpoint_metadata[self.progress.current_model_idx :]
 
         with tqdm(
             models_to_evaluate,
-            desc="Evaluating models",
+            desc=f"Evaluating {self.config.eval_type}",
             initial=self.progress.current_model_idx,
             total=self.progress.total_models,
         ) as pbar:
@@ -421,7 +462,7 @@ class CollectionEvaluator:
             # Load model
             model, tokenizer = self.checkpoint_manager.load_model_checkpoint(metadata)
 
-            # Evaluate on all conditions
+            # Evaluate on this specific eval_type
             model_results, model_attention = self._evaluate_single_model(model, tokenizer, metadata, eval_dataset)
 
             return model_results, model_attention
@@ -440,59 +481,24 @@ class CollectionEvaluator:
     def _evaluate_single_model(
         self, model: t.Any, tokenizer: t.Any, metadata: ModelMetadata, eval_dataset: dict[str, t.Any]
     ) -> tuple[list[ICLPerformanceRecord], list[AttentionRecord]]:
-        """Evaluate a single model on all evaluation conditions."""
+        """Evaluate a single model on the specified eval_type."""
         results = []
         attention_records = []
 
-        # Get model's training configuration
-        model_config = (metadata.config_L, metadata.config_m)
-
-        # Evaluate on all transfer conditions
-        for transfer_condition in self.config.transfer_conditions:
-            try:
-                condition_results, condition_attention = self._evaluate_transfer_condition(
-                    model, tokenizer, metadata, eval_dataset, transfer_condition, model_config
-                )
-                results.extend(condition_results)
-                attention_records.extend(condition_attention)
-
-            except Exception as e:
-                logger.warning(f"Failed to evaluate {transfer_condition} for {metadata.model_id}: {e}")
-                continue
-
-        return results, attention_records
-
-    def _evaluate_transfer_condition(
-        self,
-        model: t.Any,
-        tokenizer: t.Any,
-        metadata: ModelMetadata,
-        eval_dataset: dict[str, t.Any],
-        transfer_condition: str,
-        model_config: tuple[int, int],
-    ) -> tuple[list[ICLPerformanceRecord], list[AttentionRecord]]:
-        """Evaluate model on a specific transfer condition."""
-        results = []
-        attention_records = []
-
-        # Get appropriate evaluation sequences
-        eval_sequences = self._get_sequences_for_condition(eval_dataset, transfer_condition, model_config)
-
-        if not eval_sequences:
-            logger.warning(f"No sequences found for {transfer_condition} condition")
-            return results, attention_records
-
-        # Limit sequences if specified
-        if self.config.max_sequences_per_condition > 0:
-            eval_sequences = eval_sequences[: self.config.max_sequences_per_condition]
+        # Get sequences grouped by context size
+        sequences_by_k = eval_dataset.get("sequences", {})
 
         # Evaluate across context sizes and control types
         for context_size in self.config.context_sizes:
-            # Filter sequences by context size
-            context_sequences = [seq for seq in eval_sequences if seq.get("context_size") == context_size]
+            context_sequences = sequences_by_k.get(context_size, [])
 
             if not context_sequences:
+                logger.warning(f"No sequences found for context size {context_size}")
                 continue
+
+            # Limit sequences if specified
+            if self.config.max_sequences_per_condition > 0:
+                context_sequences = context_sequences[: self.config.max_sequences_per_condition]
 
             for control_type in self.config.control_types:
                 for seq_idx, base_sequence in enumerate(context_sequences):
@@ -506,24 +512,40 @@ class CollectionEvaluator:
                         )
 
                         # Extract target configuration
-                        target_config = extract_target_config_from_sequence(sequence)
+                        target_config_L = sequence.get("target_config_L", metadata.config_L)
+                        target_config_m = sequence.get("target_config_m", metadata.config_m)
 
-                        # Create performance record
+                        # Determine training phase
+                        max_step = max(meta.checkpoint_step for meta in [metadata])  # Single model context
+                        training_phase = (
+                            determine_training_phase(metadata.checkpoint_step, max_step) if max_step > 0 else "unknown"
+                        )
+
+                        # Create performance record with minimal model config
                         record = ICLPerformanceRecord(
-                            model_id=metadata.model_id,
+                            dataset_type=metadata.dataset_type,
+                            num_seeds=metadata.num_seeds,
+                            seed=metadata.seed,
                             config_L=metadata.config_L,
                             config_m=metadata.config_m,
-                            n_train=metadata.n_train,
+                            task_name=metadata.task_name,
+                            model_variant=metadata.model_variant,
                             checkpoint_step=metadata.checkpoint_step,
+                            model_id=metadata.model_id,
+                            eval_type=self.config.eval_type,
                             context_size=context_size,
-                            transfer_condition=transfer_condition,
-                            target_config_L=target_config[0],
-                            target_config_m=target_config[1],
-                            accuracy=float(is_correct),
-                            sequence_id=seq_idx,
                             control_type=control_type,
-                            evaluation_timestamp=datetime.now(),
+                            sequence_id=seq_idx,
+                            target_config_L=target_config_L,
+                            target_config_m=target_config_m,
+                            source_seeds=sequence.get("source_seeds", []),
+                            appears_in_training=sequence.get("appears_in_training", False),
+                            accuracy=float(is_correct),
                             num_correct=int(is_correct),
+                            evaluation_timestamp=datetime.now(),
+                            training_phase=training_phase,
+                            shuffle_before_packing=metadata.shuffle_before_packing,
+                            seed_balanced_batching=metadata.seed_balanced_batching,
                         )
 
                         results.append(record)
@@ -534,7 +556,15 @@ class CollectionEvaluator:
                                 layer_idx, head_idx = self._parse_attention_key(attention_key)
 
                                 attention_record = AttentionRecord(
+                                    dataset_type=metadata.dataset_type,
+                                    num_seeds=metadata.num_seeds,
+                                    seed=metadata.seed,
+                                    config_L=metadata.config_L,
+                                    config_m=metadata.config_m,
+                                    model_variant=metadata.model_variant,
+                                    checkpoint_step=metadata.checkpoint_step,
                                     model_id=metadata.model_id,
+                                    eval_type=self.config.eval_type,
                                     layer_idx=layer_idx,
                                     head_idx=head_idx,
                                     context_size=context_size,
@@ -551,49 +581,6 @@ class CollectionEvaluator:
 
         return results, attention_records
 
-    def _get_sequences_for_condition(
-        self, eval_dataset: dict[str, t.Any], transfer_condition: str, model_config: tuple[int, int]
-    ) -> list[dict[str, t.Any]]:
-        """Get evaluation sequences for a specific transfer condition."""
-        conditions = eval_dataset.get("conditions", {})
-
-        if transfer_condition == "within_config":
-            within_config_data = conditions.get("within_config", [])
-            for model_data in within_config_data:
-                if tuple(model_data["config"]) == model_config:
-                    sequences = []
-                    for k_sequences in model_data["sequences"].values():
-                        sequences.extend(k_sequences)
-                    return sequences
-
-        else:
-            # Map transfer conditions to dataset keys
-            condition_mapping = {
-                "cross_L": "depth_transfer",
-                "cross_m": "synonym_transfer",
-                "cross_config": "full_transfer",
-            }
-
-            condition_key = condition_mapping.get(transfer_condition)
-            if not condition_key:
-                return []
-
-            transfer_data = conditions.get(condition_key, {})
-            sequences = []
-
-            for config_key, config_models in transfer_data.items():
-                for model_data in config_models:
-                    for k_sequences in model_data["sequences"].values():
-                        # Add config information for target extraction
-                        for seq in k_sequences:
-                            if "config" not in seq:
-                                seq["config"] = model_data.get("config", (2, 2))
-                        sequences.extend(k_sequences)
-
-            return sequences
-
-        return []
-
     def _parse_attention_key(self, attention_key: str) -> tuple[int, int]:
         """Parse layer and head indices from attention key."""
         parts = attention_key.split("_")
@@ -606,7 +593,6 @@ class CollectionEvaluator:
         if torch.cuda.is_available():
             gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
             gpu_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-            gpu_reserved = torch.cuda.memory_reserved() / 1024**3  # GB
 
             if gpu_allocated > self.config.max_memory_usage_gb:
                 logger.warning(f"High GPU memory usage: {gpu_allocated:.2f}GB allocated")
@@ -658,13 +644,14 @@ class CollectionEvaluator:
             "total_attention_records": len(self.attention_records),
             "completed_models": len(self.progress.completed_models),
             "failed_models": len(self.progress.failed_models),
-            "unique_model_configs": len(set((m.config_L, m.config_m) for m in checkpoint_metadata)),
+            "eval_type": self.config.eval_type,
+            "model_variant": self.config.model_variant,
             "context_sizes_evaluated": list(set(r.context_size for r in self.all_results)),
-            "transfer_conditions_evaluated": list(set(r.transfer_condition for r in self.all_results)),
+            "control_types_evaluated": list(set(r.control_type for r in self.all_results)),
         }
 
     def _save_attention_data(self, attention_records: list[AttentionRecord], intermediate: bool = False) -> None:
-        """Save attention data to individual files."""
+        """Save attention data to individual files organized by eval_type."""
         import numpy as np
 
         attention_dir = self.config.output_dir / "raw_evaluations" / "attention_data"
@@ -678,6 +665,7 @@ class CollectionEvaluator:
             by_model[record.model_id].append(record)
 
         for model_id, model_records in by_model.items():
+            # Create model subdirectory
             model_dir = attention_dir / model_id
             model_dir.mkdir(exist_ok=True)
 
@@ -689,7 +677,15 @@ class CollectionEvaluator:
                     filepath,
                     attention_matrix=record.attention_matrix,
                     metadata={
+                        "dataset_type": record.dataset_type,
+                        "num_seeds": record.num_seeds,
+                        "seed": record.seed,
+                        "config_L": record.config_L,
+                        "config_m": record.config_m,
+                        "model_variant": record.model_variant,
+                        "checkpoint_step": record.checkpoint_step,
                         "model_id": record.model_id,
+                        "eval_type": record.eval_type,
                         "layer_idx": record.layer_idx,
                         "head_idx": record.head_idx,
                         "context_size": record.context_size,
@@ -697,9 +693,6 @@ class CollectionEvaluator:
                         "timestamp": record.evaluation_timestamp.isoformat(),
                     },
                 )
-
-
-"""Comprehensive evaluation pipeline for all ICL experiments."""
 
 
 class ICLEvaluationEngine:
