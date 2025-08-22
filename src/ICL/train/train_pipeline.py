@@ -442,30 +442,34 @@ def create_rhm_training_pipeline(
 
     # Get paths from model config
     paths = model_config.get_model_paths()
-    dataset_path = paths["dataset_dir"]
+    base_dataset_path = paths["base_dataset_dir"]  # This should be datasets/uniform_10_L4_M2
     output_dir = paths["model_dir"]  # This is models/uniform_10_L4_M2
 
     # Validate dataset structure and extract L,M
-    logger.info(f"Validating dataset structure at: {dataset_path}")
-    validation = validate_dataset_structure(dataset_path)
+    logger.info(f"Validating dataset structure at: {base_dataset_path}")
+    validation = validate_dataset_structure(base_dataset_path)
 
     if not validation["valid"]:
         logger.error("Dataset validation failed:")
         for error in validation["errors"]:
             logger.error(f"  ✗ {error}")
-        raise RuntimeError(f"Invalid dataset structure at {dataset_path}")
+        raise RuntimeError(f"Invalid dataset structure at {base_dataset_path}")
 
     L, m = validation["L"], validation["m"]
-    available_seeds = validation["seed_datasets_found"]
-    logger.info(f"✓ Dataset validation passed: L={L}, m={m}, seeds={available_seeds}")
+    train_seeds = validation["train_seeds_found"]
+    eval_seeds = validation["eval_seeds_found"]
+
+    logger.info(f"✓ Dataset validation passed: L={L}, m={m}")
+    logger.info(f"  Train seeds: {train_seeds}")
+    logger.info(f"  Eval seeds: {eval_seeds}")
 
     # Update training config output directory and model naming
     model_suffix = training_config.get_model_suffix()
-    # FIXED: Create subdirectory instead of appending to parent name
+    # Create subdirectory for this specific training configuration
     enhanced_output_dir = output_dir / model_suffix  # Creates: models/uniform_10_L4_M2/clm_noshuffle_seedbalanced
     training_config.output_dir = str(enhanced_output_dir)
 
-    logger.info(f"Dataset path: {dataset_path}")
+    logger.info(f"Base dataset path: {base_dataset_path}")
     logger.info(f"Configuration: L={L}, m={m}")
     logger.info(f"Enhanced model output path: {enhanced_output_dir}")
     logger.info(f"Model configuration suffix: {model_suffix}")
@@ -474,13 +478,12 @@ def create_rhm_training_pipeline(
     tokenizer = training_config.create_tokenizer()
     logger.info(f"Created RHM tokenizer with vocab size: {tokenizer.vocab_size}")
 
-    # Prepare seed-based datasets
+    # Prepare seed-based datasets (now loads train/eval separately)
     logger.info("Preparing seed-based datasets...")
     train_seed_datasets, eval_seed_datasets, metadata = prepare_seed_based_dataset(
-        dataset_path=str(dataset_path),
+        dataset_path=str(base_dataset_path),  # Pass base path, function will handle train/eval
         tokenizer=tokenizer,
         config=training_config,
-        train_split_ratio=dataset_kwargs.get("train_split_ratio", 0.8),
         max_samples_per_seed=dataset_kwargs.get("max_samples_per_seed"),
     )
 
@@ -498,10 +501,16 @@ def create_rhm_training_pipeline(
         logger.info(f"  Seed {seed}: {train_size} train, {eval_size} eval")
 
     # Validate that loaded seeds match expected seeds
-    loaded_seeds = set(train_seed_datasets.keys())
-    expected_seeds = set(available_seeds)
-    if loaded_seeds != expected_seeds:
-        logger.warning(f"Loaded seeds {loaded_seeds} don't match expected seeds {expected_seeds}")
+    loaded_train_seeds = set(train_seed_datasets.keys())
+    loaded_eval_seeds = set(eval_seed_datasets.keys())
+    expected_train_seeds = set(train_seeds)
+    expected_eval_seeds = set(eval_seeds)
+
+    if loaded_train_seeds != expected_train_seeds:
+        logger.warning(f"Loaded train seeds {loaded_train_seeds} don't match expected {expected_train_seeds}")
+
+    if loaded_eval_seeds != expected_eval_seeds:
+        logger.warning(f"Loaded eval seeds {loaded_eval_seeds} don't match expected {expected_eval_seeds}")
 
     # Update model vocab size if needed
     if hasattr(model, "resize_token_embeddings"):
@@ -538,7 +547,9 @@ def create_rhm_training_pipeline(
             "model_name": model_config.to_name(),
             "enhanced_model_name": f"{model_config.to_name()}_{model_suffix}",
             "model_type": model_config.model_type,
-            "dataset_path": str(dataset_path),
+            "base_dataset_path": str(base_dataset_path),
+            "train_dataset_path": str(base_dataset_path / "train"),
+            "eval_dataset_path": str(base_dataset_path / "eval"),
             "model_output_path": str(enhanced_output_dir),
             "model_suffix": model_suffix,
             # Add discovered L,M information
@@ -550,15 +561,20 @@ def create_rhm_training_pipeline(
         "training_metadata": {
             "total_train_samples": total_train_samples,
             "total_eval_samples": total_eval_samples,
-            "available_seeds": list(train_seed_datasets.keys()),
-            "expected_seeds": available_seeds,
+            "train_seeds": list(train_seed_datasets.keys()),
+            "eval_seeds": list(eval_seed_datasets.keys()),
+            "expected_train_seeds": train_seeds,
+            "expected_eval_seeds": eval_seeds,
             "num_seeds": len(train_seed_datasets),
             "train_samples_per_seed": {seed: len(dataset) for seed, dataset in train_seed_datasets.items()},
             "eval_samples_per_seed": {seed: len(dataset) for seed, dataset in eval_seed_datasets.items()},
             "model_type": "causal_lm" if training_config.task_name == "clm" else "mlm",
-            "dataset_path": str(dataset_path),
+            "base_dataset_path": str(base_dataset_path),
+            "train_dataset_path": str(base_dataset_path / "train"),
+            "eval_dataset_path": str(base_dataset_path / "eval"),
             "output_dir": str(enhanced_output_dir),
             "enhanced_naming": True,
+            "separate_train_eval": True,  # New flag indicating separate loading
             # Configuration parameters
             "config_L": L,
             "config_m": m,
@@ -594,7 +610,7 @@ def create_rhm_training_pipeline(
             "hidden_size": model.config.hidden_size if hasattr(model, "config") else None,
             "num_parameters": sum(p.numel() for p in model.parameters()),
         },
-        "dataset_generation_params": metadata.get("dataset_metadata", {}),
+        "dataset_generation_params": metadata.get("train_dataset_metadata", {}),
         "batching_analysis": analyze_batching_strategy(train_seed_datasets, training_config),
     }
 
@@ -602,6 +618,7 @@ def create_rhm_training_pipeline(
     logger.info(f"Trainer: {trainer.__class__.__name__} with seed-aware batching")
     logger.info(f"Enhanced model name: {enhanced_metadata['model_config']['enhanced_model_name']}")
     logger.info(f"Configuration discovered: L={L}, m={m}")
+    logger.info(f"Separate train/eval loading: {metadata.get('separate_train_eval', False)}")
     logger.info(f"Checkpointing: {training_config.save_strategy} every {training_config.save_steps}")
     logger.info(f"Evaluation: {training_config.evaluation_strategy} every {training_config.eval_steps}")
 
