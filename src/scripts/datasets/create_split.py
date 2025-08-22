@@ -4,6 +4,8 @@
 import logging
 import typing as t
 
+import yaml
+
 from ICL.datasets.split import SplitDirectoryManager, check_split_exists, copy_raw_metadata_to_splits
 from ICL.datasets.utils import (
     DatasetSplitter,
@@ -33,67 +35,43 @@ def create_split_parser():
     return parser
 
 
-def discover_raw_configurations(dataset_config: DatasetConfig) -> list[tuple[int, int]]:
-    """Discover available (L,M) configurations with raw data."""
-    import re
-
-    from ICL.settings import PATH
-
-    # Look for existing raw datasets
-    pattern = rf"{dataset_config.dataset_type}_{dataset_config.num_seeds}_L(\d+)_M(\d+)"
-    configurations = []
-
-    datasets_dir = PATH.dataset_root
-    if not datasets_dir.exists():
-        raise FileNotFoundError(f"Datasets directory not found: {datasets_dir}")
-
-    for dataset_dir in datasets_dir.iterdir():
-        if dataset_dir.is_dir():
-            match = re.match(pattern, dataset_dir.name)
-            if match:
-                L, m = int(match.group(1)), int(match.group(2))
-
-                # Check if raw data exists
-                raw_dir = dataset_dir / "raw"
-                if raw_dir.exists() and any(raw_dir.iterdir()):
-                    configurations.append((L, m))
-                    logger.info(f"Found raw data for L={L}, m={m}")
-
-    if not configurations:
-        raise FileNotFoundError(
-            f"No raw datasets found matching pattern: {pattern}\n"
-            f"Please run generate_raw.py first to create raw datasets."
-        )
-
-    return sorted(configurations)
-
-
-def load_yaml_config_for_LM(dataset_config: DatasetConfig, L: int, m: int) -> dict[str, t.Any]:
-    """Load YAML configuration for specific (L,M) configuration."""
-    import yaml
-
-    paths = dataset_config.get_config_paths(L, m)
+def load_yaml_config(dataset_config: DatasetConfig) -> dict[str, t.Any]:
+    """Load YAML configuration using L,M from DatasetConfig."""
+    paths = dataset_config.get_config_paths(dataset_config.L, dataset_config.m)
     config_path = paths["config_dir"] / "create_split.yaml"
 
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
     with config_path.open("r") as f:
-        return yaml.safe_load(f)
+        config_data = yaml.safe_load(f)
+
+    # Validate that L,M from command line match any L,M in YAML (if present)
+    yaml_L = config_data.get("L")
+    yaml_m = config_data.get("m")
+
+    if yaml_L is not None and yaml_L != dataset_config.L:
+        logger.warning(f"YAML L={yaml_L} differs from command line L={dataset_config.L}. Using command line value.")
+
+    if yaml_m is not None and yaml_m != dataset_config.m:
+        logger.warning(f"YAML m={yaml_m} differs from command line m={dataset_config.m}. Using command line value.")
+
+    return config_data
 
 
-def split_single_configuration(L: int, m: int, dataset_config: DatasetConfig, overwrite: bool = False) -> bool:
-    """Split datasets for a single (L,M) configuration.
+def split_single_configuration(dataset_config: DatasetConfig, overwrite: bool = False) -> bool:
+    """Split datasets for the specified L,M configuration.
 
     Returns:
         True if successful, False if skipped or failed
 
     """
+    L, m = dataset_config.L, dataset_config.m
     logger.info(f"Processing L={L}, m={m}")
 
     # Get paths for this configuration
     paths = dataset_config.get_config_paths(L, m)
-    base_dir = paths["dataset_dir"].parent  # Remove /train to get base
+    base_dir = paths["dataset_dir"].parent  # Remove /raw to get base
 
     # Initialize directory manager
     dir_manager = SplitDirectoryManager(base_dir)
@@ -107,7 +85,7 @@ def split_single_configuration(L: int, m: int, dataset_config: DatasetConfig, ov
         return True
 
     # Load YAML configuration
-    yaml_config = load_yaml_config_for_LM(dataset_config, L, m)
+    yaml_config = load_yaml_config(dataset_config)
     split_config = load_split_config_from_yaml(yaml_config)
 
     logger.info(f"  Split config: {split_config.validation_ratio:.1%} validation, {split_config.split_method} method")
@@ -155,58 +133,52 @@ def split_single_configuration(L: int, m: int, dataset_config: DatasetConfig, ov
 
 
 def main():
-    """Main splitting function."""
     parser = create_split_parser()
     args = parser.parse_args()
 
     # Validate arguments
     validate_args(args)
 
-    # Convert to dataset config
+    # Convert to dataset config (L,M now come from command line)
     dataset_config = parse_dataset_config(args)
 
-    # Discover available raw configurations
-    try:
-        configurations = discover_raw_configurations(dataset_config)
-    except FileNotFoundError as e:
-        logger.error(f"Error: {e}")
-        return 1
+    # Log the configuration
+    logger.info(f"Dataset configuration: {dataset_config.to_name()}")
+    logger.info(f"Using L={dataset_config.L}, m={dataset_config.m} from command line")
 
     if args.validate_only:
         logger.info(f"Validation successful for {dataset_config.to_name()}")
-        logger.info(f"Found {len(configurations)} configurations with raw data:")
-        for L, m in configurations:
-            logger.info(f"  L={L}, m={m}")
+
+        # Check if config file exists
+        try:
+            yaml_config = load_yaml_config(dataset_config)
+            logger.info("✓ Configuration file found and valid")
+
+            # Check if raw data exists
+            paths = dataset_config.get_config_paths(dataset_config.L, dataset_config.m)
+            base_dir = paths["dataset_dir"].parent
+            dir_manager = SplitDirectoryManager(base_dir)
+
+            if dir_manager.raw_dir.exists():
+                logger.info("✓ Raw data directory exists")
+            else:
+                logger.error(f"✗ Raw data directory not found: {dir_manager.raw_dir}")
+                return 1
+
+        except FileNotFoundError as e:
+            logger.error(f"✗ Configuration validation failed: {e}")
+            return 1
+
         return 0
 
-    if args.verbose:
-        logger.info(f"Dataset: {dataset_config.to_name()}")
-        logger.info(f"Configurations to split: {configurations}")
+    # Process the configuration
+    success = split_single_configuration(dataset_config, overwrite=args.overwrite)
 
-    # Process each configuration
-    total_configs = len(configurations)
-    successful_configs = 0
-    failed_configs = []
-
-    logger.info(f"\n{'=' * 60}")
-    logger.info("STARTING DATASET SPLITTING")
-    logger.info(f"{'=' * 60}")
-
-    for config_idx, (L, m) in enumerate(configurations, 1):
-        logger.info(f"\nProcessing configuration {config_idx}/{total_configs}: L={L}, m={m}")
-        logger.info("-" * 40)
-
-        try:
-            split_single_configuration(L, m, dataset_config, overwrite=args.overwrite)
-        except KeyboardInterrupt:
-            logger.info("Interrupted by user")
-            break
-
-    # Final summary
-    logger.info(f"\n{'=' * 60}")
-    logger.info("DATASET SPLITTING COMPLETE")
-
-    return 0 if successful_configs > 0 else 1
+    if success:
+        logger.info("DATASET SPLITTING COMPLETE")
+        return 0
+    logger.error("DATASET SPLITTING FAILED")
+    return 1
 
 
 if __name__ == "__main__":

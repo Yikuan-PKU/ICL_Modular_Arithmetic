@@ -11,7 +11,7 @@ import yaml
 from datasets import Dataset
 
 from ICL.datasets.RHM import RandomHierarchyModel
-from ICL.settings import PATH, DatasetConfig, create_base_parser, parse_dataset_config, validate_args
+from ICL.settings import DatasetConfig, create_base_parser, parse_dataset_config, validate_args
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -230,9 +230,10 @@ def generate_rhm_dataset_for_config(
 
 
 def save_dataset_with_metadata(
-    seed_datasets: dict[int, Dataset], metadata: dict[str, Any], dataset_config: DatasetConfig, L: int, m: int, args
+    seed_datasets: dict[int, Dataset], metadata: dict[str, Any], dataset_config: DatasetConfig, args
 ) -> None:
-    """Save separate seed datasets and metadata for a specific (L,M) configuration."""
+    """Save separate seed datasets and metadata for the specified L,M configuration."""
+    L, m = dataset_config.L, dataset_config.m
     paths = dataset_config.get_config_paths(L, m)
     dataset_dir = paths["dataset_dir"]
     config_base_dir = paths["config_base_dir"]
@@ -261,7 +262,7 @@ def save_dataset_with_metadata(
     # Save combined metadata
     with (dataset_dir / "metadata.pkl").open("wb") as f:
         pickle.dump(metadata, f)
-    logger.info(f"✓ Saved metadata to {config_base_dir / 'metadata.pkl'}")
+    logger.info(f"✓ Saved metadata to {dataset_dir / 'metadata.pkl'}")
 
     # Save seed index for easy discovery
     seed_index = {
@@ -272,7 +273,7 @@ def save_dataset_with_metadata(
 
     with (dataset_dir / "seed_index.json").open("w") as f:
         json.dump(seed_index, f, indent=2)
-    logger.info(f"✓ Saved seed index to {config_base_dir / 'seed_index.json'}")
+    logger.info(f"✓ Saved seed index to {dataset_dir / 'seed_index.json'}")
 
     # Save human-readable summary
     with (dataset_dir / "dataset_summary.txt").open("w") as f:
@@ -322,80 +323,26 @@ def save_dataset_with_metadata(
         logger.info(f"    {dataset_dir / f'seed_{seed}' / 'dataset'}")
 
 
-def extract_unique_configurations(yaml_config: dict[str, Any]) -> list[tuple[int, int]]:
-    """Extract unique (L,M) configurations from YAML config."""
-    configurations = yaml_config["configurations"]
-    unique_configs = []
-    seen = set()
-
-    for config in configurations:
-        L, m = config["L"], config["m"]
-        if (L, m) not in seen:
-            unique_configs.append((L, m))
-            seen.add((L, m))
-        else:
-            logger.warning(f"Duplicate configuration L={L}, m={m} found, skipping")
-
-    logger.info(f"Found {len(unique_configs)} unique (L,M) configurations: {unique_configs}")
-    return unique_configs
-
-
-def discover_configurations(dataset_config: DatasetConfig) -> list[tuple[int, int]]:
-    """Discover available (L,M) configurations by scanning config directories."""
-    import re
-
-    # Try multiple patterns for flexibility
-    patterns = [
-        rf"{dataset_config.dataset_type}_{dataset_config.num_seeds}_L(\d+)_M(\d+)",  # Exact match
-        rf"{dataset_config.dataset_type}_\d+_L(\d+)_M(\d+)",  # Any num_seeds
-        r"L(\d+)_M(\d+)",  # Just L*_M*
-    ]
-
-    configurations = []
-
-    if not PATH.conf_dir.exists():
-        raise FileNotFoundError(f"Configuration directory not found: {PATH.conf_dir}")
-
-    for config_dir in PATH.conf_dir.iterdir():
-        if config_dir.is_dir():
-            for pattern in patterns:
-                match = re.match(pattern, config_dir.name)
-                if match:
-                    L, m = int(match.group(1)), int(match.group(2))
-
-                    # Check if train_dataset.yaml exists in this directory
-                    yaml_file = config_dir / "generate_raw.yaml"
-                    if yaml_file.exists():
-                        configurations.append((L, m))
-                        logger.info(f"Found configuration: L={L}, m={m} at {config_dir}")
-                        break  # Stop checking other patterns for this directory
-                    logger.warning(f"Config directory {config_dir} missing generate_raw.yaml")
-
-    if not configurations:
-        logger.error("No valid configurations found. Searched patterns:")
-        for pattern in patterns:
-            logger.error(f"  - {pattern}")
-        logger.error(f"Available directories in {PATH.conf_dir}:")
-        if PATH.conf_dir.exists():
-            for item in PATH.conf_dir.iterdir():
-                logger.error(f"  - {item.name}")
-        raise FileNotFoundError(
-            "No valid configurations found. Please create config directories matching one of the patterns above."
-        )
-
-    # Remove duplicates and sort
-    configurations = sorted(list(set(configurations)))
-    logger.info(f"Discovered {len(configurations)} configurations: {configurations}")
-    return configurations
-
-
-def load_config_for_LM(dataset_config: DatasetConfig, L: int, m: int) -> dict[str, Any]:
-    """Load YAML configuration for a specific (L,M) pair."""
-    paths = dataset_config.get_config_paths(L, m)
+def load_config_for_dataset(dataset_config: DatasetConfig) -> dict[str, Any]:
+    """Load YAML configuration for the specified L,M configuration."""
+    paths = dataset_config.get_config_paths(dataset_config.L, dataset_config.m)
     config_path = paths["config_dir"] / "generate_raw.yaml"
 
     try:
-        return load_yaml_config(config_path)
+        config_data = load_yaml_config(config_path)
+
+        # Validate that L,M from command line match any L,M in YAML (if present)
+        yaml_L = config_data.get("L")
+        yaml_m = config_data.get("m")
+
+        if yaml_L is not None and yaml_L != dataset_config.L:
+            logger.warning(f"YAML L={yaml_L} differs from command line L={dataset_config.L}. Using command line value.")
+
+        if yaml_m is not None and yaml_m != dataset_config.m:
+            logger.warning(f"YAML m={yaml_m} differs from command line m={dataset_config.m}. Using command line value.")
+
+        return config_data
+
     except FileNotFoundError:
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
@@ -408,33 +355,29 @@ def main():
     # Validate arguments
     validate_args(args)
 
-    # Convert to dataset config
+    # Convert to dataset config (L,M now come from command line)
     dataset_config = parse_dataset_config(args)
 
-    # Discover available (L,M) configurations from config directories
-    try:
-        unique_configs = discover_configurations(dataset_config)
-    except FileNotFoundError as e:
-        logger.error(f"Error: {e}")
-        logger.error("Please ensure the YAML configurations exist before running dataset generation.")
-        logger.error(
-            f"Expected pattern: conf/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/generate_raw.yaml"
-        )
-        return 1
+    # Log the configuration
+    logger.info(f"Dataset configuration: {dataset_config.to_name()}")
+    logger.info(f"Using L={dataset_config.L}, m={dataset_config.m} from command line")
 
     if args.validate_only:
         logger.info(f"Configuration validation successful for {dataset_config.to_name()}")
-        logger.info(f"Found configurations: {len(unique_configs)}")
-        logger.info(f"Configurations: {unique_configs}")
         logger.info(f"Random seeds to generate: {dataset_config.num_seeds}")
 
-        # Validate each configuration file
-        for L, m in unique_configs:
-            try:
-                yaml_config = load_config_for_LM(dataset_config, L, m)
-                logger.info(f"  ✓ L={L}, m={m}: Valid YAML configuration")
-            except Exception as e:
-                logger.error(f"  ✗ L={L}, m={m}: Invalid configuration - {e}")
+        # Validate configuration file
+        try:
+            yaml_config = load_config_for_dataset(dataset_config)
+            logger.info(f"  ✓ Valid YAML configuration for L={dataset_config.L}, m={dataset_config.m}")
+
+            # Check if output directory would be writable
+            paths = dataset_config.get_config_paths(dataset_config.L, dataset_config.m)
+            logger.info(f"  ✓ Output directory: {paths['dataset_dir']}")
+
+        except Exception as e:
+            logger.error(f"  ✗ Invalid configuration - {e}")
+            return 1
         return 0
 
     # Generate random seeds using the provided RNG seed
@@ -445,46 +388,38 @@ def main():
 
     if args.verbose:
         logger.info(f"Dataset: {dataset_config.to_name()}")
-        logger.info(
-            f"Output pattern: datasets/{dataset_config.dataset_type}_{dataset_config.num_seeds}_L{{L}}_M{{m}}/raw/seed_{{seed}}/dataset/"
-        )
+        logger.info(f"Output pattern: datasets/{dataset_config.to_base_name()}/raw/seed_{{seed}}/dataset/")
 
-    # Generate datasets for each discovered (L,M) configuration
-    total_configs = len(unique_configs)
-    successful_configs = 0
-    failed_configs = []
-
+    # Load configuration for the specified (L,M) configuration
     logger.info(f"\n{'=' * 60}")
     logger.info("STARTING DATASET GENERATION")
     logger.info(f"{'=' * 60}")
+    logger.info(f"Processing configuration: L={dataset_config.L}, m={dataset_config.m}")
+    logger.info("-" * 40)
 
-    for config_idx, (L, m) in enumerate(unique_configs, 1):
-        logger.info(f"\nProcessing configuration {config_idx}/{total_configs}: L={L}, m={m}")
-        logger.info("-" * 40)
+    try:
+        # Load configuration for this specific (L,M) pair
+        yaml_config = load_config_for_dataset(dataset_config)
 
-        try:
-            # Load configuration for this specific (L,M) pair
-            yaml_config = load_config_for_LM(dataset_config, L, m)
+        # Generate separate datasets for each seed
+        seed_datasets, metadata = generate_rhm_dataset_for_config(
+            dataset_config.L, dataset_config.m, random_seeds, yaml_config
+        )
 
-            # Generate separate datasets for each seed
-            seed_datasets, metadata = generate_rhm_dataset_for_config(L, m, random_seeds, yaml_config)
+        # Save separate seed datasets and metadata
+        save_dataset_with_metadata(seed_datasets, metadata, dataset_config, args)
 
-            # Save separate seed datasets and metadata
-            save_dataset_with_metadata(seed_datasets, metadata, dataset_config, L, m, args)
+        logger.info(f"✓ Successfully completed L={dataset_config.L}, m={dataset_config.m}")
+        logger.info("DATASET GENERATION COMPLETE")
+        return 0
 
-            successful_configs += 1
-            logger.info(f"✓ Successfully completed L={L}, m={m}")
+    except Exception as e:
+        logger.error(f"✗ Failed to generate dataset for L={dataset_config.L}, m={dataset_config.m}: {e}")
+        if args.verbose:
+            import traceback
 
-        except Exception as e:
-            logger.error(f"✗ Failed to generate dataset for L={L}, m={m}: {e}")
-            failed_configs.append((L, m, str(e)))
-            if args.verbose:
-                import traceback
-
-                traceback.print_exc()
-            continue
-
-    return 0 if successful_configs > 0 else 1
+            traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":
