@@ -17,21 +17,33 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def load_separate_seed_datasets(dataset_path: str | Path) -> tuple[dict[int, Dataset], dict[str, Any]]:
-    """Load separate seed datasets from the new directory structure.
+def load_separate_seed_datasets(
+    dataset_path: str | Path, subdirectory: str = "train"
+) -> tuple[dict[int, Dataset], dict[str, Any]]:
+    """Load separate seed datasets from the directory structure.
 
     Args:
-        dataset_path: Path to dataset directory (e.g., datasets/uniform_5_L4_M2/train/)
+        dataset_path: Path to base dataset directory (e.g., datasets/uniform_5_L4_M2/)
+        subdirectory: Subdirectory to load from ("train" or "validation")
 
     Returns:
         tuple: (dict mapping seed -> Dataset, combined metadata)
 
     """
     dataset_path = Path(dataset_path)
-    logger.info(f"Loading separate seed datasets from: {dataset_path}")
+    # Ensure we're pointing to the correct subdirectory
+    if dataset_path.name in ["train", "validation"]:
+        # If path already includes subdirectory, use parent
+        base_path = dataset_path.parent
+        target_path = base_path / subdirectory
+    else:
+        # Path is base directory, add subdirectory
+        target_path = dataset_path / subdirectory
+
+    logger.info(f"Loading separate seed datasets from: {target_path}")
 
     # Load seed index to discover available seeds
-    seed_index_path = dataset_path / "seed_index.json"
+    seed_index_path = target_path / "seed_index.json"
     if not seed_index_path.exists():
         raise FileNotFoundError(f"Seed index not found: {seed_index_path}")
 
@@ -39,10 +51,10 @@ def load_separate_seed_datasets(dataset_path: str | Path) -> tuple[dict[int, Dat
         seed_index = json.load(f)
 
     available_seeds = seed_index["available_seeds"]
-    logger.info(f"Found {len(available_seeds)} seed datasets: {available_seeds}")
+    logger.info(f"Found {len(available_seeds)} seed datasets in {subdirectory}: {available_seeds}")
 
     # Load metadata
-    metadata_path = dataset_path / "metadata.pkl"
+    metadata_path = target_path / "metadata.pkl"
     if not metadata_path.exists():
         raise FileNotFoundError(f"Metadata not found: {metadata_path}")
 
@@ -52,7 +64,7 @@ def load_separate_seed_datasets(dataset_path: str | Path) -> tuple[dict[int, Dat
     # Load each seed dataset
     seed_datasets = {}
     for seed in available_seeds:
-        seed_dataset_path = dataset_path / f"seed_{seed}" / "dataset"
+        seed_dataset_path = target_path / f"seed_{seed}" / "dataset"
         if not seed_dataset_path.exists():
             logger.warning(f"Seed dataset not found: {seed_dataset_path}, skipping")
             continue
@@ -60,16 +72,147 @@ def load_separate_seed_datasets(dataset_path: str | Path) -> tuple[dict[int, Dat
         try:
             seed_dataset = load_from_disk(str(seed_dataset_path))
             seed_datasets[seed] = seed_dataset
-            logger.info(f"  ✓ Loaded seed {seed}: {len(seed_dataset)} sequences")
+            logger.info(f"  ✓ Loaded seed {seed} ({subdirectory}): {len(seed_dataset)} sequences")
         except Exception as e:
-            logger.warning(f"  ✗ Failed to load seed {seed}: {e}")
+            logger.warning(f"  ✗ Failed to load seed {seed} ({subdirectory}): {e}")
             continue
 
     if not seed_datasets:
-        raise RuntimeError(f"No valid seed datasets found in {dataset_path}")
+        raise RuntimeError(f"No valid seed datasets found in {target_path}")
 
-    logger.info(f"Successfully loaded {len(seed_datasets)} seed datasets")
+    logger.info(f"Successfully loaded {len(seed_datasets)} seed datasets from {subdirectory}")
     return seed_datasets, metadata
+
+
+def prepare_seed_based_dataset(
+    dataset_path: str,
+    tokenizer: RHMTokenizer,
+    config: "RHMTrainingConfig",
+    max_samples_per_seed: int | None = None,
+) -> tuple[dict[int, Dataset], dict[int, Dataset], dict[str, Any]]:
+    """Prepare seed-based datasets for training with separate train/eval loading.
+
+    Args:
+        dataset_path: Base dataset path (e.g., datasets/uniform_10_L4_M2/)
+        tokenizer: RHM tokenizer
+        config: Training configuration
+        max_samples_per_seed: Optional limit on samples per seed
+
+    Returns:
+        tuple: (train_seed_datasets, eval_seed_datasets, metadata)
+
+    """
+    logger.info("=" * 60)
+    logger.info("PREPARING SEED-BASED DATASET")
+    logger.info("=" * 60)
+
+    base_dataset_path = Path(dataset_path)
+
+    # Ensure we're working with the base directory
+    if base_dataset_path.name in ["train", "validation"]:
+        base_dataset_path = base_dataset_path.parent
+
+    logger.info(f"Base dataset path: {base_dataset_path}")
+
+    # Load train and eval datasets separately
+    logger.info("Loading training datasets...")
+    train_seed_datasets, train_metadata = load_separate_seed_datasets(base_dataset_path, "train")
+
+    logger.info("Loading evaluation datasets...")
+    eval_seed_datasets, eval_metadata = load_separate_seed_datasets(base_dataset_path, "validation")
+
+    # Verify that train and eval have the same seeds
+    train_seeds = set(train_seed_datasets.keys())
+    eval_seeds = set(eval_seed_datasets.keys())
+
+    if train_seeds != eval_seeds:
+        logger.warning(f"Train seeds {train_seeds} != Eval seeds {eval_seeds}")
+        # Use intersection of seeds
+        common_seeds = train_seeds & eval_seeds
+        logger.info(f"Using common seeds: {common_seeds}")
+
+        train_seed_datasets = {seed: dataset for seed, dataset in train_seed_datasets.items() if seed in common_seeds}
+        eval_seed_datasets = {seed: dataset for seed, dataset in eval_seed_datasets.items() if seed in common_seeds}
+
+    # Limit samples per seed if specified
+    if max_samples_per_seed is not None:
+        logger.info(f"Limiting to {max_samples_per_seed} samples per seed")
+
+        for seed in train_seed_datasets:
+            if len(train_seed_datasets[seed]) > max_samples_per_seed:
+                indices = list(range(len(train_seed_datasets[seed])))
+                import random
+
+                random.Random(seed).shuffle(indices)
+                train_seed_datasets[seed] = train_seed_datasets[seed].select(indices[:max_samples_per_seed])
+                logger.info(f"Limited train seed {seed} to {max_samples_per_seed} samples")
+
+        for seed in eval_seed_datasets:
+            if len(eval_seed_datasets[seed]) > max_samples_per_seed:
+                indices = list(range(len(eval_seed_datasets[seed])))
+                import random
+
+                random.Random(seed).shuffle(indices)
+                eval_seed_datasets[seed] = eval_seed_datasets[seed].select(indices[:max_samples_per_seed])
+                logger.info(f"Limited eval seed {seed} to {max_samples_per_seed} samples")
+
+    # Pack sequences for each seed in both train and eval
+    logger.info("Packing training sequences...")
+    packed_train_seed_datasets = pack_seed_datasets(train_seed_datasets, tokenizer, config)
+
+    logger.info("Packing evaluation sequences...")
+    packed_eval_seed_datasets = pack_seed_datasets(eval_seed_datasets, tokenizer, config)
+
+    # Calculate statistics
+    total_train_sequences = sum(len(dataset) for dataset in packed_train_seed_datasets.values())
+    total_eval_sequences = sum(len(dataset) for dataset in packed_eval_seed_datasets.values())
+
+    # Log statistics per seed
+    for seed in packed_train_seed_datasets.keys():
+        train_size = len(packed_train_seed_datasets[seed])
+        eval_size = len(packed_eval_seed_datasets[seed])
+        logger.info(f"  Seed {seed}: {train_size} train, {eval_size} val")
+
+    # Enhanced metadata combining train and eval information
+    metadata = {
+        # Original dataset sizes (before packing)
+        "original_train_seed_datasets": {seed: len(dataset) for seed, dataset in train_seed_datasets.items()},
+        "original_eval_seed_datasets": {seed: len(dataset) for seed, dataset in eval_seed_datasets.items()},
+        # Packed dataset sizes
+        "packed_train_seed_datasets": {seed: len(dataset) for seed, dataset in packed_train_seed_datasets.items()},
+        "packed_eval_seed_datasets": {seed: len(dataset) for seed, dataset in packed_eval_seed_datasets.items()},
+        # Final sizes
+        "train_seed_datasets": {seed: len(dataset) for seed, dataset in packed_train_seed_datasets.items()},
+        "eval_seed_datasets": {seed: len(dataset) for seed, dataset in packed_eval_seed_datasets.items()},
+        "total_train_sequences": total_train_sequences,
+        "total_eval_sequences": total_eval_sequences,
+        "available_seeds": list(packed_train_seed_datasets.keys()),
+        "num_seeds": len(packed_train_seed_datasets),
+        # Dataset loading method
+        "train_split_ratio": None,  # Not applicable since we load separate datasets
+        "separate_train_eval": True,
+        "packing_enabled": True,  # Always true now
+        "shuffling_enabled": config.shuffle_before_packing,
+        "shuffle_strategy": config.shuffle_strategy if config.shuffle_before_packing else None,
+        "seed_based_loading": True,
+        # Metadata from datasets
+        "train_dataset_metadata": train_metadata,
+        "eval_dataset_metadata": eval_metadata,
+        "config": config,
+        "tokenizer_vocab_size": tokenizer.vocab_size,
+        # Paths
+        "base_dataset_path": str(base_dataset_path),
+        "train_dataset_path": str(base_dataset_path / "train"),
+        "eval_dataset_path": str(base_dataset_path / "validation"),
+    }
+
+    logger.info(f"Total train sequences: {total_train_sequences:,}")
+    logger.info(f"Total eval sequences: {total_eval_sequences:,}")
+    logger.info(f"Available seeds: {list(packed_train_seed_datasets.keys())}")
+    logger.info(f"Tokenizer vocab size: {tokenizer.vocab_size}")
+    logger.info("=" * 60)
+
+    return packed_train_seed_datasets, packed_eval_seed_datasets, metadata
 
 
 def pack_seed_datasets(
@@ -234,87 +377,6 @@ def _pack_sequences_single_seed(
         )
 
     return Dataset.from_list(packed_examples)
-
-
-def prepare_seed_based_dataset(
-    dataset_path: str,
-    tokenizer: RHMTokenizer,
-    config: "RHMTrainingConfig",
-    train_split_ratio: float = 0.8,
-    max_samples_per_seed: int | None = None,
-) -> tuple[dict[int, Dataset], dict[int, Dataset], dict[str, Any]]:
-    """Prepare seed-based datasets for training with separate seed handling.
-
-    Returns:
-        tuple: (train_seed_datasets, eval_seed_datasets, metadata)
-
-    """
-    logger.info("=" * 60)
-    logger.info("PREPARING SEED-BASED DATASET")
-    logger.info("=" * 60)
-
-    # Load separate seed datasets
-    seed_datasets, dataset_metadata = load_separate_seed_datasets(dataset_path)
-
-    # Limit samples per seed if specified
-    if max_samples_per_seed is not None:
-        for seed in seed_datasets:
-            if len(seed_datasets[seed]) > max_samples_per_seed:
-                indices = list(range(len(seed_datasets[seed])))
-                import random
-
-                random.Random(seed).shuffle(indices)
-                seed_datasets[seed] = seed_datasets[seed].select(indices[:max_samples_per_seed])
-                logger.info(f"Limited seed {seed} to {max_samples_per_seed} samples")
-
-    # Pack sequences for each seed
-    packed_seed_datasets = pack_seed_datasets(seed_datasets, tokenizer, config)
-
-    # Split each seed dataset into train/eval
-    train_seed_datasets = {}
-    eval_seed_datasets = {}
-
-    total_train_sequences = 0
-    total_eval_sequences = 0
-
-    for seed, packed_dataset in packed_seed_datasets.items():
-        split_idx = int(len(packed_dataset) * train_split_ratio)
-
-        train_seed_datasets[seed] = packed_dataset.select(range(split_idx))
-        eval_seed_datasets[seed] = packed_dataset.select(range(split_idx, len(packed_dataset)))
-
-        total_train_sequences += len(train_seed_datasets[seed])
-        total_eval_sequences += len(eval_seed_datasets[seed])
-
-        logger.info(f"  Seed {seed}: {len(train_seed_datasets[seed])} train, {len(eval_seed_datasets[seed])} eval")
-
-    # Enhanced metadata
-    metadata = {
-        "original_seed_datasets": {seed: len(dataset) for seed, dataset in seed_datasets.items()},
-        "packed_seed_datasets": {seed: len(dataset) for seed, dataset in packed_seed_datasets.items()},
-        "train_seed_datasets": {seed: len(dataset) for seed, dataset in train_seed_datasets.items()},
-        "eval_seed_datasets": {seed: len(dataset) for seed, dataset in eval_seed_datasets.items()},
-        "total_train_sequences": total_train_sequences,
-        "total_eval_sequences": total_eval_sequences,
-        "available_seeds": list(seed_datasets.keys()),
-        "num_seeds": len(seed_datasets),
-        "train_split_ratio": train_split_ratio,
-        "packing_enabled": True,  # Always true now
-        "shuffling_enabled": config.shuffle_before_packing,
-        "shuffle_strategy": config.shuffle_strategy if config.shuffle_before_packing else None,
-        "seed_based_loading": True,
-        "dataset_metadata": dataset_metadata,
-        "config": config,
-        "tokenizer_vocab_size": tokenizer.vocab_size,
-    }
-
-    logger.info(f"Total train sequences: {total_train_sequences:,}")
-    logger.info(f"Total eval sequences: {total_eval_sequences:,}")
-    logger.info(f"Available seeds: {list(seed_datasets.keys())}")
-    logger.info(f"Tokenizer vocab size: {tokenizer.vocab_size}")
-    logger.info("=" * 60)
-
-    return train_seed_datasets, eval_seed_datasets, metadata
 
 
 def analyze_batching_strategy(train_seed_datasets: dict[int, Dataset], config: RHMTrainingConfig) -> dict[str, t.Any]:
@@ -533,10 +595,10 @@ def analyze_batching_strategy(train_seed_datasets: dict[int, Dataset], config: R
 
 
 def validate_dataset_structure(dataset_path: str | Path) -> dict[str, t.Any]:
-    """Validate that the dataset has the expected seed-based structure.
+    """Validate that the dataset has the expected seed-based structure with train/eval subdirectories.
 
     Args:
-        dataset_path: Path to dataset directory (e.g., datasets/uniform_10_L4_M2/train/)
+        dataset_path: Path to base dataset directory (e.g., datasets/uniform_10_L4_M2/)
 
     Returns:
         dict: Comprehensive validation results and discovered information
@@ -544,19 +606,27 @@ def validate_dataset_structure(dataset_path: str | Path) -> dict[str, t.Any]:
     """
     dataset_path = Path(dataset_path)
 
+    # Ensure we're working with the base directory
+    if dataset_path.name in ["train", "validation"]:
+        dataset_path = dataset_path.parent
+
     validation_result = {
         "valid": False,
         "dataset_path": str(dataset_path),
-        "seed_datasets_found": [],
-        "metadata_exists": False,
-        "seed_index_exists": False,
+        "train_seeds_found": [],
+        "eval_seeds_found": [],
+        "train_metadata_exists": False,
+        "eval_metadata_exists": False,
+        "train_seed_index_exists": False,
+        "eval_seed_index_exists": False,
         "L": None,
         "m": None,
         "dataset_type": None,
         "num_seeds": None,
         "errors": [],
         "warnings": [],
-        "seed_dataset_details": {},
+        "train_seed_details": {},
+        "eval_seed_details": {},
         "file_structure": {},
     }
 
@@ -569,6 +639,20 @@ def validate_dataset_structure(dataset_path: str | Path) -> dict[str, t.Any]:
         validation_result["errors"].append(f"Dataset path is not a directory: {dataset_path}")
         return validation_result
 
+    # Check for train and eval subdirectories
+    train_dir = dataset_path / "train"
+    eval_dir = dataset_path / "validation"
+
+    if not train_dir.exists():
+        validation_result["errors"].append(f"Train directory not found: {train_dir}")
+
+    if not eval_dir.exists():
+        validation_result["errors"].append(f"Eval directory not found: {eval_dir}")
+
+    if not train_dir.exists() and not eval_dir.exists():
+        validation_result["errors"].append("Neither train nor eval directories found")
+        return validation_result
+
     # Extract L,M and other parameters from path
     try:
         L, m = extract_L_M_from_dataset_path(dataset_path)
@@ -576,17 +660,13 @@ def validate_dataset_structure(dataset_path: str | Path) -> dict[str, t.Any]:
         validation_result["m"] = m
 
         # Extract additional parameters from path
-        # Expected pattern: datasets/uniform_10_L4_M2/train/
+        # Expected pattern: datasets/uniform_10_L4_M2/
         path_parts = dataset_path.parts
 
         # Find the part that contains the configuration
-        config_part = None
-        for part in path_parts:
-            if "_L" in part and "_M" in part:
-                config_part = part
-                break
+        config_part = dataset_path.name
 
-        if config_part:
+        if "_L" in config_part and "_M" in config_part:
             # Extract dataset_type and num_seeds
             import re
 
@@ -600,11 +680,121 @@ def validate_dataset_structure(dataset_path: str | Path) -> dict[str, t.Any]:
         validation_result["errors"].append(f"Could not extract L,M from path: {e}")
         return validation_result
 
+    # Validate train directory if it exists
+    if train_dir.exists():
+        train_validation = _validate_subdirectory_structure(train_dir, "train")
+        validation_result["train_seeds_found"] = train_validation["seeds_found"]
+        validation_result["train_metadata_exists"] = train_validation["metadata_exists"]
+        validation_result["train_seed_index_exists"] = train_validation["seed_index_exists"]
+        validation_result["train_seed_details"] = train_validation["seed_details"]
+        validation_result["errors"].extend(train_validation["errors"])
+        validation_result["warnings"].extend(train_validation["warnings"])
+
+    # Validate eval directory if it exists
+    if eval_dir.exists():
+        eval_validation = _validate_subdirectory_structure(eval_dir, "validation")
+        validation_result["eval_seeds_found"] = eval_validation["seeds_found"]
+        validation_result["eval_metadata_exists"] = eval_validation["metadata_exists"]
+        validation_result["eval_seed_index_exists"] = eval_validation["seed_index_exists"]
+        validation_result["eval_seed_details"] = eval_validation["seed_details"]
+        validation_result["errors"].extend(eval_validation["errors"])
+        validation_result["warnings"].extend(eval_validation["warnings"])
+
+    # Cross-validate seeds between train and eval
+    if validation_result["train_seeds_found"] and validation_result["eval_seeds_found"]:
+        train_seeds = set(validation_result["train_seeds_found"])
+        eval_seeds = set(validation_result["eval_seeds_found"])
+
+        if train_seeds != eval_seeds:
+            validation_result["warnings"].append(f"Train seeds {train_seeds} != Eval seeds {eval_seeds}")
+
+            missing_in_eval = train_seeds - eval_seeds
+            missing_in_train = eval_seeds - train_seeds
+
+            if missing_in_eval:
+                validation_result["warnings"].append(f"Seeds missing in eval: {missing_in_eval}")
+            if missing_in_train:
+                validation_result["warnings"].append(f"Seeds missing in train: {missing_in_train}")
+
+    # Additional file structure analysis
+    try:
+        all_items = list(dataset_path.iterdir())
+        validation_result["file_structure"]["total_items"] = len(all_items)
+        validation_result["file_structure"]["directories"] = [item.name for item in all_items if item.is_dir()]
+        validation_result["file_structure"]["files"] = [item.name for item in all_items if item.is_file()]
+
+        # Check for expected structure
+        expected_dirs = {"train", "validation"}
+        actual_dirs = {item.name for item in all_items if item.is_dir()}
+
+        missing_dirs = expected_dirs - actual_dirs
+        if missing_dirs:
+            validation_result["warnings"].append(f"Missing expected directories: {missing_dirs}")
+
+        unexpected_items = actual_dirs - expected_dirs
+        if unexpected_items:
+            validation_result["warnings"].append(f"Unexpected directories: {unexpected_items}")
+
+    except Exception as e:
+        validation_result["warnings"].append(f"Could not analyze file structure: {e}")
+
+    # Final validation
+    has_valid_train = (
+        train_dir.exists()
+        and validation_result["train_seed_index_exists"]
+        and validation_result["train_metadata_exists"]
+        and len(validation_result["train_seeds_found"]) > 0
+    )
+
+    has_valid_eval = (
+        eval_dir.exists()
+        and validation_result["eval_seed_index_exists"]
+        and validation_result["eval_metadata_exists"]
+        and len(validation_result["eval_seeds_found"]) > 0
+    )
+
+    validation_result["valid"] = has_valid_train and has_valid_eval and len(validation_result["errors"]) == 0
+
+    # Generate summary
+    if validation_result["valid"]:
+        train_count = len(validation_result["train_seeds_found"])
+        eval_count = len(validation_result["eval_seeds_found"])
+        validation_result["summary"] = (
+            f"✓ Valid dataset: {train_count} train seeds, {eval_count} eval seeds, "
+            f"L={L}, m={m}, type={validation_result.get('dataset_type', 'unknown')}"
+        )
+    else:
+        error_count = len(validation_result["errors"])
+        warning_count = len(validation_result["warnings"])
+        validation_result["summary"] = f"✗ Invalid dataset: {error_count} errors, {warning_count} warnings"
+
+    return validation_result
+
+
+def _validate_subdirectory_structure(subdir_path: Path, subdir_name: str) -> dict[str, t.Any]:
+    """Validate structure of a train or eval subdirectory.
+
+    Args:
+        subdir_path: Path to train or eval subdirectory
+        subdir_name: Name of subdirectory ("train" or "validation")
+
+    Returns:
+        dict: Validation results for this subdirectory
+
+    """
+    result = {
+        "seeds_found": [],
+        "metadata_exists": False,
+        "seed_index_exists": False,
+        "seed_details": {},
+        "errors": [],
+        "warnings": [],
+    }
+
     # Check for seed_index.json
-    seed_index_path = dataset_path / "seed_index.json"
+    seed_index_path = subdir_path / "seed_index.json"
     if seed_index_path.exists():
-        validation_result["seed_index_exists"] = True
-        validation_result["file_structure"]["seed_index.json"] = "found"
+        result["seed_index_exists"] = True
 
         try:
             import json
@@ -612,93 +802,39 @@ def validate_dataset_structure(dataset_path: str | Path) -> dict[str, t.Any]:
             with seed_index_path.open("r") as f:
                 seed_index = json.load(f)
 
-            # Validate seed index structure
             required_keys = ["available_seeds", "num_seeds", "dataset_paths"]
             missing_keys = [key for key in required_keys if key not in seed_index]
             if missing_keys:
-                validation_result["warnings"].append(f"seed_index.json missing keys: {missing_keys}")
+                result["warnings"].append(f"{subdir_name}/seed_index.json missing keys: {missing_keys}")
 
-            validation_result["seed_datasets_found"] = seed_index.get("available_seeds", [])
-
-            # Validate seed index consistency
-            if "num_seeds" in seed_index:
-                expected_num_seeds = seed_index["num_seeds"]
-                actual_num_seeds = len(validation_result["seed_datasets_found"])
-                if expected_num_seeds != actual_num_seeds:
-                    validation_result["warnings"].append(
-                        f"seed_index.json reports {expected_num_seeds} seeds but lists {actual_num_seeds} seeds"
-                    )
+            result["seeds_found"] = seed_index.get("available_seeds", [])
 
         except json.JSONDecodeError as e:
-            validation_result["errors"].append(f"Invalid JSON in seed_index.json: {e}")
+            result["errors"].append(f"Invalid JSON in {subdir_name}/seed_index.json: {e}")
         except Exception as e:
-            validation_result["errors"].append(f"Could not read seed_index.json: {e}")
+            result["errors"].append(f"Could not read {subdir_name}/seed_index.json: {e}")
     else:
-        validation_result["errors"].append(f"seed_index.json not found at {seed_index_path}")
-        validation_result["file_structure"]["seed_index.json"] = "missing"
+        result["errors"].append(f"{subdir_name}/seed_index.json not found")
 
     # Check for metadata.pkl
-    metadata_path = dataset_path / "metadata.pkl"
+    metadata_path = subdir_path / "metadata.pkl"
     if metadata_path.exists():
-        validation_result["metadata_exists"] = True
-        validation_result["file_structure"]["metadata.pkl"] = "found"
+        result["metadata_exists"] = True
 
         try:
             import pickle
 
             with metadata_path.open("rb") as f:
                 metadata = pickle.load(f)
-
-            # Validate metadata structure and extract useful information
-            if isinstance(metadata, dict):
-                # Check for expected metadata fields
-                expected_fields = ["config_params", "seed_info", "dataset_stats"]
-                found_fields = [field for field in expected_fields if field in metadata]
-
-                if found_fields:
-                    validation_result["metadata_summary"] = {
-                        "found_fields": found_fields,
-                        "config_params": metadata.get("config_params", {}),
-                        "seed_info": metadata.get("seed_info", {}),
-                    }
-
-                # Cross-validate with extracted parameters
-                if "config_params" in metadata:
-                    config_params = metadata["config_params"]
-                    if "L" in config_params and config_params["L"] != L:
-                        validation_result["warnings"].append(
-                            f"L mismatch: path suggests L={L}, metadata has L={config_params['L']}"
-                        )
-                    if "m" in config_params and config_params["m"] != m:
-                        validation_result["warnings"].append(
-                            f"m mismatch: path suggests m={m}, metadata has m={config_params['m']}"
-                        )
-
-                # Validate seed information
-                if "seed_info" in metadata:
-                    seed_info = metadata["seed_info"]
-                    if "random_seeds" in seed_info:
-                        metadata_seeds = seed_info["random_seeds"]
-                        if set(metadata_seeds) != set(validation_result["seed_datasets_found"]):
-                            validation_result["warnings"].append(
-                                f"Seed mismatch: metadata seeds {metadata_seeds} != index seeds {validation_result['seed_datasets_found']}"
-                            )
-
-            else:
-                validation_result["warnings"].append("metadata.pkl does not contain a dictionary")
-
+            # Could add more metadata validation here if needed
         except Exception as e:
-            validation_result["errors"].append(f"Could not read metadata.pkl: {e}")
+            result["errors"].append(f"Could not read {subdir_name}/metadata.pkl: {e}")
     else:
-        validation_result["errors"].append(f"metadata.pkl not found at {metadata_path}")
-        validation_result["file_structure"]["metadata.pkl"] = "missing"
+        result["errors"].append(f"{subdir_name}/metadata.pkl not found")
 
-    # Check for actual seed datasets
-    found_seeds = []
-    seed_details = {}
-
-    for seed in validation_result["seed_datasets_found"]:
-        seed_dir = dataset_path / f"seed_{seed}"
+    # Check individual seed datasets
+    for seed in result["seeds_found"]:
+        seed_dir = subdir_path / f"seed_{seed}"
         seed_dataset_path = seed_dir / "dataset"
 
         seed_info = {
@@ -708,107 +844,44 @@ def validate_dataset_structure(dataset_path: str | Path) -> dict[str, t.Any]:
             "dataset_path": str(seed_dataset_path),
         }
 
-        if seed_dir.exists():
-            if seed_dataset_path.exists():
-                try:
-                    # Try to load and validate the dataset
-                    from datasets import load_from_disk
+        if seed_dir.exists() and seed_dataset_path.exists():
+            try:
+                from datasets import load_from_disk
 
-                    dataset = load_from_disk(str(seed_dataset_path))
+                dataset = load_from_disk(str(seed_dataset_path))
 
-                    seed_info.update(
-                        {
-                            "dataset_valid": True,
-                            "num_sequences": len(dataset),
-                            "columns": dataset.column_names,
-                            "features": dataset.features,
-                        }
-                    )
+                seed_info.update(
+                    {
+                        "dataset_valid": True,
+                        "num_sequences": len(dataset),
+                        "columns": dataset.column_names,
+                    }
+                )
 
-                    # Validate expected columns
-                    expected_columns = ["input_ids", "length"]
-                    missing_columns = [col for col in expected_columns if col not in dataset.column_names]
-                    if missing_columns:
-                        validation_result["warnings"].append(f"Seed {seed} dataset missing columns: {missing_columns}")
-                        seed_info["missing_columns"] = missing_columns
+                # Validate expected columns
+                expected_columns = ["input_ids", "length"]
+                missing_columns = [col for col in expected_columns if col not in dataset.column_names]
+                if missing_columns:
+                    result["warnings"].append(f"{subdir_name} seed {seed} missing columns: {missing_columns}")
+                    seed_info["missing_columns"] = missing_columns
 
-                    # Sample validation
-                    if len(dataset) > 0:
-                        sample = dataset[0]
-                        if "input_ids" in sample:
-                            input_ids = sample["input_ids"]
-                            if isinstance(input_ids, list) and len(input_ids) > 0:
-                                seed_info["sample_length"] = len(input_ids)
-                                seed_info["sample_valid"] = True
-                            else:
-                                validation_result["warnings"].append(f"Seed {seed} has invalid input_ids format")
-                                seed_info["sample_valid"] = False
-
-                    found_seeds.append(seed)
-
-                except Exception as e:
-                    validation_result["errors"].append(f"Seed {seed} dataset exists but cannot be loaded: {e}")
-                    seed_info.update(
-                        {
-                            "dataset_valid": False,
-                            "load_error": str(e),
-                        }
-                    )
-            else:
-                validation_result["errors"].append(
-                    f"Seed dataset directory exists but dataset not found: {seed_dataset_path}"
+            except Exception as e:
+                result["errors"].append(f"{subdir_name} seed {seed} dataset cannot be loaded: {e}")
+                seed_info.update(
+                    {
+                        "dataset_valid": False,
+                        "load_error": str(e),
+                    }
                 )
         else:
-            validation_result["errors"].append(f"Seed directory not found: {seed_dir}")
+            if not seed_dir.exists():
+                result["errors"].append(f"{subdir_name} seed directory not found: {seed_dir}")
+            if not seed_dataset_path.exists():
+                result["errors"].append(f"{subdir_name} seed dataset not found: {seed_dataset_path}")
 
-        seed_details[seed] = seed_info
+        result["seed_details"][seed] = seed_info
 
-    validation_result["seed_dataset_details"] = seed_details
-    validation_result["seed_datasets_found"] = found_seeds
-
-    # Additional file structure analysis
-    try:
-        # List all items in the dataset directory
-        all_items = list(dataset_path.iterdir())
-        validation_result["file_structure"]["total_items"] = len(all_items)
-        validation_result["file_structure"]["directories"] = [item.name for item in all_items if item.is_dir()]
-        validation_result["file_structure"]["files"] = [item.name for item in all_items if item.is_file()]
-
-        # Check for unexpected files/directories
-        expected_items = {"seed_index.json", "metadata.pkl", "dataset_summary.txt"} | {
-            f"seed_{seed}" for seed in validation_result["seed_datasets_found"]
-        }
-
-        actual_items = {item.name for item in all_items}
-        unexpected_items = actual_items - expected_items
-
-        if unexpected_items:
-            validation_result["warnings"].append(f"Unexpected items in dataset directory: {unexpected_items}")
-            validation_result["file_structure"]["unexpected_items"] = list(unexpected_items)
-
-    except Exception as e:
-        validation_result["warnings"].append(f"Could not analyze file structure: {e}")
-
-    # Final validation
-    validation_result["valid"] = (
-        len(found_seeds) > 0
-        and validation_result["seed_index_exists"]
-        and validation_result["metadata_exists"]
-        and len(validation_result["errors"]) == 0
-    )
-
-    # Generate summary
-    if validation_result["valid"]:
-        validation_result["summary"] = (
-            f"✓ Valid dataset: {len(found_seeds)} seeds, L={L}, m={m}, "
-            f"type={validation_result.get('dataset_type', 'unknown')}"
-        )
-    else:
-        error_count = len(validation_result["errors"])
-        warning_count = len(validation_result["warnings"])
-        validation_result["summary"] = f"✗ Invalid dataset: {error_count} errors, {warning_count} warnings"
-
-    return validation_result
+    return result
 
 
 def extract_L_M_from_dataset_path(dataset_path: str | Path) -> tuple[int, int]:

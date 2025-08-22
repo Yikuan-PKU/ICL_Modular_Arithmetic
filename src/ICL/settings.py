@@ -125,7 +125,7 @@ def load_experiment_config(config_type: str, dataset_config: "DatasetConfig", L:
 
 def get_dataset_subdir(is_eval: bool) -> str:
     """Get dataset subdirectory name based on dataset type."""
-    return "eval" if is_eval else "train"
+    return "eval" if is_eval else "raw"
 
 
 #################################
@@ -238,7 +238,7 @@ class ModelConfig:
         model_base_name = self.dataset_config.to_base_name()  # e.g., "uniform_10_L4_M2"
 
         return {
-            "model_dir": PATH.model_dir / model_base_name / self.model_type,
+            "model_dir": PATH.model_dir / model_base_name,
             "dataset_dir": dataset_paths["dataset_dir"],  # e.g., "datasets/uniform_10_L4_M2/train"
             "config_dir": dataset_paths["config_dir"],  # e.g., "conf/uniform_10_L4_M2"
             "base_dataset_dir": dataset_paths["base_dataset_dir"],  # e.g., "datasets/uniform_10_L4_M2"
@@ -250,6 +250,7 @@ class ModelConfig:
         result_name = f"{base_name}__{eval_suffix}" if eval_suffix else base_name
 
         paths = self.get_model_paths()
+        # Since model_dir is now the base path, results should also follow the enhanced naming
         paths["results_dir"] = PATH.result_dir / result_name
         return paths
 

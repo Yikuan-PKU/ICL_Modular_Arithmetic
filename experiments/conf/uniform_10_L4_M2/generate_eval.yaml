@@ -1,0 +1,100 @@
+# Complete train_dataset.yaml configuration file
+# Place in: conf/RHM_5_L2_M2/train_dataset.yaml
+# This includes raw generation, splitting, and ICL evaluation config
+
+eval_config:
+  # Global settings
+  base_seed: 42                      # Base seed for evaluation generation
+  create_combined_dataset: true      # Create unified dataset with all types
+  save_intermediate: true            # Save intermediate files during generation
+
+  # ICL sequence construction parameters
+  icl_params:
+    context_sizes: [1, 2, 3, 4, 5]   # Number of in-context examples to test
+    sequences_per_context_size: 100  # ICL sequences to generate per context size
+    max_sequence_length: null        # Optional: limit sequence length
+    min_sequence_length: null        # Optional: minimum sequence length
+
+  # Type 1: In-Distribution Memorization
+  # Uses sequences that appeared in training data
+  memorization:
+    enable: true                     # Enable memorization evaluation
+    sampling_ratio: 0.5              # Sample 50% of training sequences
+    ensure_coverage: true            # Ensure all training seeds represented
+    min_sequences_per_seed: 10       # Minimum sequences per seed
+
+  # Type 2: In-Distribution Generalization
+  # Uses validation split (same seeds, different sequences)
+  id_generalization:
+    enable: true                     # Enable ID generalization evaluation
+    use_validation_split: true       # Use validation split sequences
+    sampling_ratio: 1.0              # Use all validation sequences (100%)
+    min_sequences_per_seed: 10       # Minimum sequences per seed
+
+  # Type 3: Out-of-Distribution Same Rule
+  # Uses completely different seeds but same (L,m) configuration
+  ood_same_rule:
+    enable: true                     # Enable OOD same rule evaluation
+    num_ood_seeds: 3                 # Number of new seeds to generate
+    ood_seed_offset: 100000          # Seed offset to avoid training seeds
+    sequences_per_seed: 200          # Sequences to generate per new seed
+    min_sequences_per_seed: 50       # Minimum sequences per seed
+
+  # Type 4: Out-of-Distribution Transfer
+  # Uses different seeds AND different (L,m) configurations
+  ood_transfer:
+    enable: true                     # Enable OOD transfer evaluation
+    transfer_types: ["depth", "synonym"]  # Types: "depth", "synonym", "full"
+    max_transfer_distance: 2         # Maximum increase in L or m
+    num_transfer_seeds: 2            # Seeds per transfer configuration
+    sequences_per_seed: 200          # Sequences per seed
+    min_sequences_per_seed: 50       # Minimum sequences per seed
+    transfer_seed_offset: 200000     # Seed offset for transfer seeds
+
+# =============================================================================
+# OPTIONAL: ADVANCED CONFIGURATION
+# =============================================================================
+advanced_config:
+  # Transfer matrix configuration
+  transfer_matrix:
+    enable_depth_transfer: true      # L+1, L+2, etc.
+    enable_synonym_transfer: true    # m+1, m+2, etc.
+    enable_full_transfer: false      # Both L and m increase (disabled for speed)
+    max_depth: 6                     # Maximum L for transfer experiments
+    max_multiplicity: 8              # Maximum m for transfer experiments
+
+  # Quality control settings
+  quality_control:
+    validate_icl_sequences: true     # Validate generated ICL sequences
+    check_training_overlap: true     # Verify memorization sequences
+    ensure_rule_independence: true   # Verify OOD rule independence
+    max_generation_attempts: 10      # Max attempts per RHM generation
+
+  # Output format options
+  output_format:
+    save_separate_types: true        # Save each evaluation type separately
+    create_unified_dataset: true     # Also create combined dataset
+    include_rich_metadata: true      # Include detailed metadata
+    compress_datasets: false        # Compress saved datasets
+
+# =============================================================================
+# EXPERIMENTAL: ADDITIONAL EVALUATION TYPES
+# =============================================================================
+experimental_eval:
+  # Cross-configuration evaluation
+  cross_config_eval:
+    enable: false                    # Enable cross-config evaluation
+    source_configs: ["L2_M2"]       # Source configurations
+    target_configs: ["L3_M2", "L2_M3"]  # Target configurations
+
+  # Few-shot vs many-shot analysis
+  shot_analysis:
+    enable: false                    # Enable shot analysis
+    few_shot_sizes: [1, 2, 3]       # Few-shot context sizes
+    many_shot_sizes: [8, 16, 32]    # Many-shot context sizes
+
+  # Sequence length analysis
+  length_analysis:
+    enable: false                    # Enable length-based analysis
+    short_sequences: [5, 10]        # Short sequence lengths
+    long_sequences: [50, 100]       # Long sequence lengths

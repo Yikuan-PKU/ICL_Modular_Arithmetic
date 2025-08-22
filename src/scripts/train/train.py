@@ -73,27 +73,56 @@ def extract_L_M_from_dataset_path(dataset_path: str | Path) -> tuple[int, int]:
     """Extract L and M values from dataset directory path.
 
     Args:
-        dataset_path: Path like datasets/uniform_10_L4_M2/train/
+        dataset_path: Path like datasets/uniform_10_L4_M2/ or datasets/uniform_10_L4_M2/train/
 
     Returns:
         tuple: (L, m) values
 
+    Raises:
+        ValueError: If L,M cannot be extracted from path
+
     """
     dataset_path = Path(dataset_path)
 
-    # Look for pattern in the dataset directory name
+    # Handle both base paths and paths with train/eval subdirectories
+    if dataset_path.name in ["train", "eval"]:
+        # Use parent directory if path includes train/eval
+        search_path = dataset_path.parent
+    else:
+        # Use the path as-is if it's already the base directory
+        search_path = dataset_path
+
+    # Look for pattern in the dataset directory path
+    # Example: datasets/uniform_10_L4_M2/ -> L=4, M=2
     pattern = r".*_L(\d+)_M(\d+)"
 
-    # Check the parent directory name (remove /train/ suffix)
-    dir_name = dataset_path.parent.name if dataset_path.name == "train" else dataset_path.name
-
-    match = re.search(pattern, dir_name)
+    # Try the directory name first
+    match = re.search(pattern, search_path.name)
     if match:
         L = int(match.group(1))
         m = int(match.group(2))
         return L, m
 
-    raise ValueError(f"Could not extract L,M from dataset path: {dataset_path}")
+    # Try the full path string
+    match = re.search(pattern, str(search_path))
+    if match:
+        L = int(match.group(1))
+        m = int(match.group(2))
+        return L, m
+
+    # Try individual path components
+    for part in search_path.parts:
+        match = re.search(pattern, part)
+        if match:
+            L = int(match.group(1))
+            m = int(match.group(2))
+            return L, m
+
+    raise ValueError(
+        f"Could not extract L,M from dataset path: {dataset_path}. "
+        f"Expected pattern: *_L{{L}}_M{{m}} in path components. "
+        f"Searched in: {search_path}"
+    )
 
 
 def load_yaml_overrides(config_path: str | Path | None) -> dict[str, t.Any]:
@@ -325,10 +354,10 @@ def main():
     logger.info(f"Learning rate: {training_config.learning_rate}")
     logger.info(f"Epochs: {training_config.num_train_epochs}")
     logger.info(f"Dataset path: {paths['dataset_dir']}")
-    logger.info(f"Model output: {paths['model_dir']}")
+    logger.info(f"Base model path: {paths['model_dir']}")  # Updated log message
+    logger.info(f"Enhanced model path: {training_config.output_dir}")  # Add this line
     logger.info(f"Config path: {paths['config_dir']}")
     logger.info("=" * 60)
-
     # Create model based on configuration
     logger.info("Creating model...")
     if training_config.model_name_or_path:
@@ -390,20 +419,24 @@ def main():
         model_config=model_config,  # Pass ModelConfig instead of dataset path
         model=model,
         training_config=training_config,
-        train_split_ratio=getattr(training_config, "train_split_ratio", 0.8),
-        filter_config_L=getattr(training_config, "filter_config_L", None),
-        filter_config_m=getattr(training_config, "filter_config_m", None),
-        max_samples=getattr(training_config, "max_samples", None),
+        max_samples_per_seed=getattr(training_config, "max_samples_per_seed", None),  # Removed train_split_ratio
     )
 
-    # Log dataset info
-    dataset_meta = metadata.get("dataset_metadata", {})
+    # Log dataset info - Updated for separate train/eval structure
+    dataset_meta = metadata.get("seed_dataset_metadata", {})
     logger.info("Dataset preparation completed:")
-    logger.info(f"  Original size: {safe_format_number(dataset_meta.get('original_size'))}")
-    logger.info(f"  Filtered size: {safe_format_number(dataset_meta.get('filtered_size'))}")
-    logger.info(f"  Packed size: {safe_format_number(dataset_meta.get('packed_size'))}")
-    logger.info(f"  Train size: {safe_format_number(dataset_meta.get('train_size'))}")
-    logger.info(f"  Eval size: {safe_format_number(dataset_meta.get('eval_size'))}")
+
+    # Updated logging to reflect separate train/eval loading
+    logger.info(f"  Separate train/eval loading: {dataset_meta.get('separate_train_eval', True)}")
+    logger.info(
+        f"  Original train size: {safe_format_number(sum(dataset_meta.get('original_train_seed_datasets', {}).values()))}"
+    )
+    logger.info(
+        f"  Original eval size: {safe_format_number(sum(dataset_meta.get('original_eval_seed_datasets', {}).values()))}"
+    )
+    logger.info(f"  Packed train size: {safe_format_number(dataset_meta.get('total_train_sequences'))}")
+    logger.info(f"  Packed eval size: {safe_format_number(dataset_meta.get('total_eval_sequences'))}")
+    logger.info(f"  Available seeds: {dataset_meta.get('available_seeds', [])}")
     logger.info(f"  Shuffling enabled: {dataset_meta.get('shuffling_enabled', False)}")
     if dataset_meta.get("shuffling_enabled"):
         logger.info(f"  Shuffle strategy: {dataset_meta.get('shuffle_strategy', 'N/A')}")
@@ -435,20 +468,22 @@ def main():
     logger.info(f"Dataset base: {model_config.dataset_config.to_base_name()}")
     logger.info(f"Results saved to: {training_config.output_dir}")
 
-    # Log evaluation-ready info
+    # Log evaluation-ready info - Updated for separate train/eval
     train_meta = metadata.get("training_metadata", {})
     logger.info("Training metadata:")
     logger.info(f"  config_L: {train_meta.get('config_L')}")
     logger.info(f"  config_m: {train_meta.get('config_m')}")
-    logger.info(f"  n_train: {train_meta.get('n_train')}")
+    logger.info(f"  total_train_samples: {train_meta.get('total_train_samples')}")
+    logger.info(f"  total_eval_samples: {train_meta.get('total_eval_samples')}")
     logger.info(f"  model_type: {train_meta.get('model_type')}")
+    logger.info(f"  separate_train_eval: {train_meta.get('separate_train_eval')}")
     logger.info(f"  shuffling_enabled: {train_meta.get('shuffling_enabled')}")
 
     # Log hierarchical paths
-    model_meta = metadata.get("model_config", {})
     logger.info("Hierarchical structure:")
     logger.info(f"  Base dataset: {paths['base_dataset_dir']}")
-    logger.info(f"  Train dataset: {paths['dataset_dir']}")
+    logger.info(f"  Train dataset: {paths['base_dataset_dir'] / 'train'}")
+    logger.info(f"  Eval dataset: {paths['base_dataset_dir'] / 'eval'}")
     logger.info(f"  Model output: {paths['model_dir']}")
     logger.info(f"  Config dir: {paths['config_dir']}")
     logger.info("=" * 60)

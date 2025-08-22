@@ -26,7 +26,7 @@ SHARED_ARGS="--dataset-type $DATASET_TYPE --seed $RNG_SEED --num-seeds $NUM_SEED
 
 # Step 1: Validate configuration (optional but recommended)
 echo "Step 1: Validating configuration..."
-python $SCRIPT_ROOT/generate_eval.py $SHARED_ARGS --validate-only
+python $SCRIPT_ROOT/create_split.py $SHARED_ARGS --validate-only
 
 echo "Step 2: Running generation..."
-python $SCRIPT_ROOT/generate_eval.py $SHARED_ARGS $PIPELINE_ARGS
+python $SCRIPT_ROOT/create_split.py $SHARED_ARGS $PIPELINE_ARGS
