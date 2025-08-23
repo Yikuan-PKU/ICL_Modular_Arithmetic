@@ -15,7 +15,7 @@ base_config:
 # Collection-specific parameters (not in model configs)
 collection_config:
   # Memory management - control attention data collection
-  capture_attention: false
+  capture_attention: true
   
   # Evaluation parameters
   evaluation_parameters:
@@ -27,7 +27,7 @@ collection_config:
   
   # Execution parameters
   execution_parameters:
-    device: cpu
+    device: cuda
     batch_size: 32
     max_sequences_per_condition: 10
     save_intermediate: true

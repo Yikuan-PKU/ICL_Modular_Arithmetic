@@ -1,289 +1,223 @@
-"""Simplified evaluator - basic evaluation loop only."""
+"""Simplified collection configuration."""
 
-import logging
-import random
+from dataclasses import dataclass
+from pathlib import Path
 
-import torch
-from datasets import load_from_disk
-from tqdm import tqdm
-
-from ICL.eval.collection.ckpt_manager import CheckpointManager
-from ICL.eval.collection.data_schema import (
-    create_attention_record,
-    create_performance_record,
-    records_to_dataframe,
-    save_attention_data,
-)
-
-logger = logging.getLogger(__name__)
+from ICL.settings import PATH
 
 
-class CollectionEvaluator:
-    """Simplified evaluator."""
+@dataclass
+class CollectionConfig:
+    """Simplified collection configuration."""
 
-    def __init__(self, config):
+    # Core parameters from bash script
+    dataset_type: str
+    num_seeds: int
+    seed: int
+    config_L: int
+    config_m: int
+    model_type: str
+
+    # Mode selection
+    model_variant: str | None = None
+    eval_type: str | None = None
+    batch_mode: bool = False
+
+    # Simple execution parameters
+    device: str = "cuda"
+    batch_size: int = 32
+    max_sequences_per_condition: int = 200
+    capture_attention: bool = True
+    context_sizes: list[int] = None
+    control_types: list[str] = None
+
+    # Basic paths (auto-generated)
+    eval_dataset_path: Path | None = None
+    model_base_dir: Path | None = None
+    output_dir: Path | None = None
+
+    def __post_init__(self):
         """Simple initialization."""
-        self.config = config
-        self.checkpoint_manager = CheckpointManager(config)
-        self.evaluation_engine = ICLEvaluationEngine(config.device)
+        # Set defaults
+        if self.context_sizes is None:
+            self.context_sizes = [1, 2, 3, 4, 5]
+        if self.control_types is None:
+            self.control_types = ["normal", "shuffled_context", "random_context"]
 
-        # Simple result storage
-        self.performance_records = []
-        self.attention_records = []
+        # Generate model variant if not provided
+        if not self.model_variant:
+            self.model_variant = f"{self.model_type}_noshuffle_seedbalanced"
 
-    def run_comprehensive_collection(self) -> dict:
-        """Simplified collection pipeline."""
-        logger.info("Starting collection...")
+        # Set up paths
+        self._setup_paths()
 
-        # Load dataset
-        eval_dataset = self._load_evaluation_dataset()
+    def _setup_paths(self):
+        """Simple path setup."""
+        shared_id = f"{self.dataset_type}_{self.num_seeds}_L{self.config_L}_M{self.config_m}"
 
-        # Discover checkpoints
-        checkpoints = self.checkpoint_manager.discover_checkpoints()
-        logger.info(f"Found {len(checkpoints)} checkpoints")
+        if not self.batch_mode:
+            # Single mode paths
+            self.eval_dataset_path = PATH.dataset_root / shared_id / "eval" / self.eval_type / "dataset"
+            self.model_base_dir = PATH.model_dir / shared_id / self.model_variant
+            self.output_dir = PATH.result_dir / shared_id / self.model_variant / self.eval_type / "collection"
+        else:
+            # Batch mode paths
+            self.model_base_dir = PATH.model_dir / shared_id
+            self.output_dir = PATH.result_dir / shared_id
 
-        # Run evaluation
-        self._run_evaluation_loop(checkpoints, eval_dataset)
+    def create_output_structure(self):
+        """Create basic output directories."""
+        if not self.output_dir:
+            return
 
-        # Save results
-        return self._save_results()
+        directories = [
+            self.output_dir,
+            self.output_dir / "raw_evaluations",
+            self.output_dir / "logs",
+        ]
 
-    def _load_evaluation_dataset(self) -> dict:
-        """Simple dataset loading."""
-        logger.info(f"Loading dataset from {self.config.eval_dataset_path}")
+        if self.capture_attention:
+            directories.append(self.output_dir / "raw_evaluations" / "attention_data")
 
-        hf_dataset = load_from_disk(str(self.config.eval_dataset_path))
+        for directory in directories:
+            directory.mkdir(parents=True, exist_ok=True)
 
-        # Convert to simple format
-        sequences = []
-        for i, example in enumerate(hf_dataset):
-            sequence = {
-                "context_features": example.get("context_features", []),
-                "context_labels": example.get("context_labels", []),
-                "query_features": example.get("query_features", []),
-                "query_label": example.get("query_label", 0),
-                "context_size": len(example.get("context_features", [])),
-                "sequence_id": i,
-                "target_config_L": example.get("target_config_L", self.config.config_L),
-                "target_config_m": example.get("target_config_m", self.config.config_m),
-                "appears_in_training": self._get_training_appearance(example),
-            }
-            sequences.append(sequence)
+    def discover_combinations(self) -> list[tuple[str, str]]:
+        """Simple combination discovery for batch mode."""
+        if not self.batch_mode:
+            return [(self.model_variant, self.eval_type)]
 
-        logger.info(f"Loaded {len(sequences)} sequences")
-        return {"sequences": sequences}
+        shared_id = f"{self.dataset_type}_{self.num_seeds}_L{self.config_L}_M{self.config_m}"
 
-    def _get_training_appearance(self, example):
-        """Simple training appearance logic."""
-        if self.config.eval_type == "memorization":
-            return True
-        if self.config.eval_type in ["id_generalization", "ood_same_rule", "ood_transfer"]:
-            return False
-        return example.get("appears_in_training", False)
+        # Find model variants
+        model_base = PATH.model_dir / shared_id
+        model_variants = [d.name for d in model_base.iterdir() if d.is_dir()]
 
-    def _run_evaluation_loop(self, checkpoints, eval_dataset):
-        """Simple evaluation loop."""
-        sequences = eval_dataset["sequences"]
+        # Find eval types
+        eval_base = PATH.dataset_root / shared_id / "eval"
+        eval_types = [d.name for d in eval_base.iterdir() if d.is_dir()]
 
-        for checkpoint in tqdm(checkpoints, desc="Evaluating models"):
-            try:
-                # Load model
-                model, tokenizer = self.checkpoint_manager.load_model_checkpoint(checkpoint)
+        # Create combinations
+        combinations = []
+        for variant in model_variants:
+            for eval_type in eval_types:
+                if (model_base / variant).exists() and (eval_base / eval_type / "dataset").exists():
+                    combinations.append((variant, eval_type))
 
-                # Evaluate on sequences
-                self._evaluate_model(model, tokenizer, checkpoint, sequences)
+        return combinations
 
-                # Basic cleanup
-                del model, tokenizer
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+    def create_single_config(self, model_variant: str, eval_type: str) -> "CollectionConfig":
+        """Create single config from batch config."""
+        return CollectionConfig(
+            dataset_type=self.dataset_type,
+            num_seeds=self.num_seeds,
+            seed=self.seed,
+            config_L=self.config_L,
+            config_m=self.config_m,
+            model_type=self.model_type,
+            model_variant=model_variant,
+            eval_type=eval_type,
+            device=self.device,
+            batch_size=self.batch_size,
+            max_sequences_per_condition=self.max_sequences_per_condition,
+            capture_attention=self.capture_attention,
+            context_sizes=self.context_sizes.copy(),
+            control_types=self.control_types.copy(),
+            batch_mode=False,
+        )
 
-            except Exception as e:
-                logger.warning(f"Failed to evaluate {checkpoint['model_id']}: {e}")
-                continue
+    @classmethod
+    def from_args(
+        cls,
+        dataset_type: str,
+        num_seeds: int,
+        seed: int,
+        config_L: int,
+        config_m: int,
+        model_type: str,
+        model_variant: str | None = None,
+        eval_type: str | None = None,
+        device: str = "cuda",
+        batch_mode: bool = False,
+        **kwargs,
+    ) -> "CollectionConfig":
+        """Create CollectionConfig from arguments."""
+        config = cls(
+            dataset_type=dataset_type,
+            num_seeds=num_seeds,
+            seed=seed,
+            config_L=config_L,
+            config_m=config_m,
+            model_type=model_type,
+            model_variant=model_variant,
+            eval_type=eval_type,
+            device=device,
+            batch_mode=batch_mode,
+        )
 
-    def _evaluate_model(self, model, tokenizer, checkpoint, sequences):
-        """Evaluate single model on all sequences."""
-        for context_size in self.config.context_sizes:
-            # Filter sequences by context size
-            size_sequences = [s for s in sequences if s["context_size"] == context_size]
+        # Apply any additional kwargs
+        for key, value in kwargs.items():
+            if hasattr(config, key):
+                setattr(config, key, value)
 
-            if not size_sequences:
-                continue
-
-            # Limit sequences if needed
-            if self.config.max_sequences_per_condition > 0:
-                size_sequences = size_sequences[: self.config.max_sequences_per_condition]
-
-            # Sample 10% for attention if attention capture is enabled
-            if self.config.capture_attention and len(size_sequences) > 10:
-                attention_sample_size = max(1, len(size_sequences) // 10)  # 10% but at least 1
-                attention_sequences = random.sample(size_sequences, attention_sample_size)
-                logger.info(
-                    f"Sampling {len(attention_sequences)}/{len(size_sequences)} sequences for attention capture"
-                )
-            else:
-                attention_sequences = size_sequences  # Use all if small dataset or no attention
-
-            for control_type in self.config.control_types:
-                for seq_idx, sequence in enumerate(size_sequences):
-                    try:
-                        # Create control sequence
-                        control_seq = self._create_control_sequence(sequence, control_type, size_sequences)
-
-                        # Determine if we should capture attention for this sequence
-                        should_capture_attention = self.config.capture_attention and sequence in attention_sequences
-
-                        # Evaluate
-                        is_correct, attention_data = self.evaluation_engine.evaluate_icl_sequence(
-                            model, tokenizer, control_seq, should_capture_attention
-                        )
-
-                        # Store performance result (always stored)
-                        eval_context = {
-                            "eval_type": self.config.eval_type,
-                            "context_size": context_size,
-                            "control_type": control_type,
-                            "sequence_id": seq_idx,
-                        }
-
-                        record = create_performance_record(checkpoint, eval_context, control_seq, is_correct)
-                        self.performance_records.append(record)
-
-                        # Store attention if captured (only for sampled sequences)
-                        if attention_data and should_capture_attention:
-                            for layer_idx, layer_data in attention_data.items():
-                                if isinstance(layer_data, dict):
-                                    for head_idx, attention_matrix in layer_data.items():
-                                        attention_record = create_attention_record(
-                                            checkpoint, eval_context, layer_idx, head_idx, attention_matrix
-                                        )
-                                        self.attention_records.append(attention_record)
-
-                    except Exception as e:
-                        logger.warning(f"Failed sequence {seq_idx}: {e}")
-                        continue
-
-    def _create_control_sequence(self, sequence, control_type, all_sequences):
-        """Simple control sequence creation."""
-        if control_type == "normal":
-            return sequence
-        if control_type == "shuffled_context":
-            seq_copy = sequence.copy()
-            context_pairs = list(zip(seq_copy["context_features"], seq_copy["context_labels"], strict=False))
-            random.shuffle(context_pairs)
-            seq_copy["context_features"] = [p[0] for p in context_pairs]
-            seq_copy["context_labels"] = [p[1] for p in context_pairs]
-            return seq_copy
-        if control_type == "random_context":
-            # Just return original for simplicity
-            return sequence
-        return sequence
-
-    def _save_results(self) -> dict:
-        """Simple result saving."""
-        self.config.create_output_structure()
-
-        # Save performance results
-        if self.performance_records:
-            df = records_to_dataframe(self.performance_records)
-            results_path = self.config.output_dir / "raw_evaluations" / "icl_performance.parquet"
-            df.to_parquet(results_path, index=False)
-            logger.info(f"Saved {len(self.performance_records)} performance records")
-
-        # Save attention data
-        if self.attention_records and self.config.capture_attention:
-            save_attention_data(self.attention_records, self.config.output_dir)
-            logger.info(f"Saved {len(self.attention_records)} attention records")
-
-        return {
-            "total_evaluations": len(self.performance_records),
-            "total_attention_records": len(self.attention_records),
-            "eval_type": self.config.eval_type,
-            "model_variant": self.config.model_variant,
-        }
+        return config
 
 
-class ICLEvaluationEngine:
-    """Simple ICL evaluation engine."""
+def create_collection_parser():
+    """Simplified argument parser."""
+    import argparse
 
-    def __init__(self, device: str = "cuda"):
-        self.device = torch.device(device)
+    parser = argparse.ArgumentParser(description="ICL Evaluation Collection Phase")
 
-    def evaluate_icl_sequence(self, model, tokenizer, sequence, capture_attention=False):
-        """Simple sequence evaluation."""
-        try:
-            # Format prompt
-            prompt = self._format_icl_prompt(
-                sequence["context_features"], sequence["context_labels"], sequence["query_features"], tokenizer
-            )
+    # Required arguments
+    parser.add_argument("--dataset-type", choices=["uniform", "zipf"], required=True)
+    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--num-seeds", type=int, default=1)
+    parser.add_argument("--L", type=int, required=True)
+    parser.add_argument("--M", type=int, required=True)
+    parser.add_argument("--model-type", choices=["clm", "mlm"], required=True)
 
-            # Tokenize
-            inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=512).to(
-                self.device
-            )
+    # Mode selection
+    parser.add_argument("--batch-mode", action="store_true")
+    parser.add_argument("--model-variant")
+    parser.add_argument("--eval-type", choices=["memorization", "id_generalization", "ood_same_rule", "ood_transfer"])
 
-            # Get prediction
-            with torch.no_grad():
-                if capture_attention:
-                    outputs = model(**inputs, output_attentions=True)
-                    attention_data = self._extract_attention(outputs.attentions)
-                else:
-                    outputs = model(**inputs)
-                    attention_data = None
+    # Execution parameters
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--max-sequences", type=int)
+    parser.add_argument("--no-attention", action="store_true")
 
-                # Get prediction
-                logits = outputs.logits if hasattr(outputs, "logits") else outputs
-                predicted_label = self._extract_prediction(logits, tokenizer)
-                is_correct = predicted_label == sequence["query_label"]
+    # Utility commands
+    parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--list-combinations", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
 
-            return is_correct, attention_data
+    return parser
 
-        except Exception as e:
-            logger.warning(f"Evaluation failed: {e}")
-            return False, None
 
-    def _format_icl_prompt(self, context_features, context_labels, query_features, tokenizer):
-        """Simple prompt formatting."""
-        prompt_parts = []
+def create_collection_config_from_args(args) -> CollectionConfig:
+    """Create config from parsed arguments."""
+    config = CollectionConfig(
+        dataset_type=args.dataset_type,
+        num_seeds=args.num_seeds,
+        seed=args.seed,
+        config_L=args.L,
+        config_m=args.M,
+        model_type=args.model_type,
+        model_variant=getattr(args, "model_variant", None),
+        eval_type=getattr(args, "eval_type", None),
+        device=getattr(args, "device", "cuda"),
+        batch_mode=getattr(args, "batch_mode", False),
+    )
 
-        # Add context examples
-        for features, label in zip(context_features, context_labels, strict=False):
-            feature_str = " ".join(map(str, features))
-            prompt_parts.append(f"Input: {feature_str} Output: {label}")
+    # Apply overrides
+    if hasattr(args, "batch_size") and args.batch_size:
+        config.batch_size = args.batch_size
+    if hasattr(args, "max_sequences") and args.max_sequences:
+        config.max_sequences_per_condition = args.max_sequences
+    if hasattr(args, "no_attention") and args.no_attention:
+        config.capture_attention = False
 
-        # Add query
-        query_str = " ".join(map(str, query_features))
-        prompt_parts.append(f"Input: {query_str} Output:")
-
-        return "\n".join(prompt_parts)
-
-    def _extract_prediction(self, logits, tokenizer):
-        """Simple prediction extraction."""
-        last_token_logits = logits[0, -1, :]
-        predicted_token_id = torch.argmax(last_token_logits).item()
-        predicted_token = tokenizer.decode([predicted_token_id]).strip()
-
-        try:
-            return int(predicted_token)
-        except ValueError:
-            import re
-
-            digits = re.findall(r"\d+", predicted_token)
-            return int(digits[0]) if digits else -1
-
-    def _extract_attention(self, attention_tensors):
-        """Simple attention extraction."""
-        attention_data = {}
-
-        for layer_idx, layer_attention in enumerate(attention_tensors):
-            layer_attention = layer_attention.squeeze(0)  # Remove batch dimension
-            layer_data = {}
-
-            for head_idx in range(layer_attention.size(0)):
-                head_attention = layer_attention[head_idx].cpu().numpy()
-                layer_data[head_idx] = head_attention
-
-            attention_data[layer_idx] = layer_data
-
-        return attention_data
+    return config

@@ -42,3 +42,4 @@ done
 
 echo "Runing interactive job: @CPU_P1 with CPU:$nproc_value for Time:$time_value : "
 srun --pty --job-name="interactive-cpu" --account="hhb@cpu" --nodes="1" --ntasks-per-node="1" --cpus-per-task="$nproc_value" --partition=cpu_p1  -t "$time_value" bash -i
+

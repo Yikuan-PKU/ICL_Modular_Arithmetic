@@ -9,10 +9,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from ICL.eval.collection.collection_config import (
-    create_collection_config_from_args,
-    create_collection_parser,
-)
+from ICL.eval.collection.collection_config import create_collection_config_from_args, create_collection_parser
 from ICL.eval.collection.coordinator import CollectionCoordinator
 
 logger = logging.getLogger(__name__)
