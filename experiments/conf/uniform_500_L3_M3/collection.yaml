@@ -6,17 +6,10 @@
 base_config:
   # Evaluation types to process (discovered from datasets/.../eval/)
   evaluation_types:
-
-    # - "memorization"
-    # - "id_generalization" 
-    # - "ood_same_rule"
+    - "memorization"
+    - "id_generalization" 
+    - "ood_same_rule"
     - "ood_transfer"
-  
-  # Model variants auto-discovered from existing config files:
-  # - clm.yaml → clm_noshuffle_seedbalanced (if shuffle_before_packing=false, seed_balanced_batching=true)
-  # - mlm.yaml → mlm_noshuffle_seedbalanced (similar settings)
-  # Only 3 fields parsed: task_name, shuffle_before_packing, seed_balanced_batching
-
 
 # Collection-specific parameters
 collection_config:

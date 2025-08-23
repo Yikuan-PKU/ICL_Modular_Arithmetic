@@ -1,20 +1,11 @@
-"""Checkpoint management with minimal model config parsing."""
+"""Checkpoint management with explicit L,M values - no auto-discovery."""
 
 import logging
-import typing as t
-import warnings
 from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
 
-from ICL import settings
-from ICL.eval.collection.data_schema import (
-    ModelMetadata,
-    determine_training_phase,
-    generate_model_variant_name,
-    load_minimal_model_config,
-)
 from ICL.train.tokenizer import RHMTokenizer
 
 logging.basicConfig(level=logging.INFO)
@@ -22,96 +13,57 @@ logger = logging.getLogger(__name__)
 
 
 class CheckpointManager:
-    """Manages model checkpoint discovery with minimal config parsing."""
+    """Simplified checkpoint manager."""
 
     def __init__(self, config):
-        """Initialize checkpoint manager with evaluation configuration."""
+        """Simplified initialization."""
         self.config = config
         self.device = torch.device(config.device)
-        self._checkpoint_cache: dict[str, tuple[t.Any, t.Any]] = {}
 
-    def discover_checkpoints(self) -> list[ModelMetadata]:
-        """Discover all available checkpoints for the specified model variant."""
-        all_metadata = []
-
-        # Find all checkpoints in the model variant directory
+    def discover_checkpoints(self) -> list[dict]:
+        """Simplified checkpoint discovery - returns simple dicts."""
         if not self.config.model_base_dir.exists():
             raise FileNotFoundError(f"Model directory not found: {self.config.model_base_dir}")
 
         checkpoint_dirs = self._find_checkpoint_directories(self.config.model_base_dir)
-
         if not checkpoint_dirs:
             raise FileNotFoundError(f"No checkpoints found in {self.config.model_base_dir}")
 
-        # Load minimal model config to get the essential fields
-        model_config = self._load_model_config_for_variant()
-
-        # Create metadata for each checkpoint
-        max_step = max(self._extract_checkpoint_step(path) for path in checkpoint_dirs)
-
+        all_metadata = []
         for checkpoint_path in checkpoint_dirs:
             try:
                 checkpoint_step = self._extract_checkpoint_step(checkpoint_path)
-                training_phase = determine_training_phase(checkpoint_step, max_step)
+                model_id = f"{self.config.model_variant}_step{checkpoint_step}"
 
-                # Generate model ID
-                model_id = self._generate_model_id(self.config.model_variant, checkpoint_step, checkpoint_path)
-
-                metadata = ModelMetadata(
-                    dataset_type=self.config.dataset_type,
-                    num_seeds=self.config.num_seeds,
-                    seed=self.config.seed,
-                    config_L=self.config.config_L,
-                    config_m=self.config.config_m,
-                    task_name=model_config["task_name"],
-                    model_variant=self.config.model_variant,
-                    shuffle_before_packing=model_config["shuffle_before_packing"],
-                    seed_balanced_batching=model_config["seed_balanced_batching"],
-                    checkpoint_step=checkpoint_step,
-                    checkpoint_path=checkpoint_path,
-                    model_id=model_id,
-                )
-
+                # Simple metadata dict - use model_type from bash script, not YAML
+                metadata = {
+                    "model_variant": self.config.model_variant,
+                    "checkpoint_step": checkpoint_step,
+                    "checkpoint_path": checkpoint_path,
+                    "model_id": model_id,
+                    "config_L": self.config.config_L,
+                    "config_m": self.config.config_m,
+                    "task_name": self.config.model_type,  # Use explicit model_type from bash
+                }
                 all_metadata.append(metadata)
-
             except Exception as e:
-                warnings.warn(f"Failed to process checkpoint {checkpoint_path}: {e}")
+                logger.warning(f"Failed to process checkpoint {checkpoint_path}: {e}")
                 continue
 
-        # Sort by checkpoint step
-        all_metadata.sort(key=lambda x: x.checkpoint_step)
-
-        logger.info(f"Discovered {len(all_metadata)} checkpoints for {self.config.model_variant}")
-        self._print_discovery_summary(all_metadata)
-
+        all_metadata.sort(key=lambda x: x["checkpoint_step"])
+        logger.info(f"Discovered {len(all_metadata)} checkpoints")
         return all_metadata
-
-    def _load_model_config_for_variant(self) -> dict[str, t.Any]:
-        """Load minimal model config for the current variant."""
-        shared_id = (
-            f"{self.config.dataset_type}_{self.config.num_seeds}_L{self.config.config_L}_M{self.config.config_m}"
-        )
-
-        # Determine which config file to load based on model variant
-        # clm_noshuffle_seedbalanced → clm.yaml
-        task_name = self.config.model_variant.split("_")[0]  # "clm" or "mlm"
-        config_file = Path(f"/scratch2/jliu/ICL/conf/{shared_id}/{task_name}.yaml")
-        config_file = settings.PATH.conf_dir / shared_id / f"{task_name}.yaml"
-
-        if not config_file.exists():
-            raise FileNotFoundError(f"Model config file not found: {config_file}")
-
-        model_config = load_minimal_model_config(config_file)
-
-        # Verify that the loaded config generates the expected variant name
-        expected_variant = generate_model_variant_name(model_config)
-        if expected_variant != self.config.model_variant:
-            logger.warning(f"Config mismatch: expected {expected_variant}, got {self.config.model_variant}")
-
-        return model_config
 
     def _find_checkpoint_directories(self, model_base_dir: Path) -> list[Path]:
         """Find all checkpoint directories within the model variant directory."""
+        # Debug: check what's actually in the directory
+        logger.info(f"Searching for checkpoints in: {model_base_dir}")
+        if model_base_dir.exists():
+            all_items = list(model_base_dir.iterdir())
+            logger.info(f"Found {len(all_items)} items in directory")
+            for item in all_items[:5]:  # Log first 5 items
+                logger.info(f"  Item: {item.name} (dir: {item.is_dir()})")
+
         checkpoint_patterns = [
             "checkpoint-*",  # Standard HuggingFace format
             "step_*",  # Alternative naming
@@ -120,13 +72,19 @@ class CheckpointManager:
 
         found_checkpoints = []
         for pattern in checkpoint_patterns:
-            found_checkpoints.extend(model_base_dir.glob(pattern))
+            matches = list(model_base_dir.glob(pattern))
+            logger.info(f"Pattern '{pattern}' found {len(matches)} matches")
+            found_checkpoints.extend(matches)
 
         # Filter to only directories that look like valid checkpoints
         valid_checkpoints = []
         for checkpoint_path in found_checkpoints:
-            if checkpoint_path.is_dir() and self._is_valid_checkpoint(checkpoint_path):
-                valid_checkpoints.append(checkpoint_path)
+            logger.info(f"Checking checkpoint: {checkpoint_path}")
+            if checkpoint_path.is_dir():
+                is_valid = self._is_valid_checkpoint(checkpoint_path)
+                logger.info(f"  Is valid checkpoint: {is_valid}")
+                if is_valid:
+                    valid_checkpoints.append(checkpoint_path)
 
         logger.info(f"Found {len(valid_checkpoints)} valid checkpoints in {model_base_dir}")
         return sorted(valid_checkpoints)
@@ -136,13 +94,25 @@ class CheckpointManager:
         # Check for essential files
         config_file = checkpoint_path / "config.json"
         if not config_file.exists():
+            logger.info(f"  Missing config.json in {checkpoint_path}")
             return False
 
         # Check for model weights (at least one format)
-        model_files = ["pytorch_model.bin", "model.safetensors", "model.pt", "pytorch_model.safetensors"]
+        model_files = [
+            "pytorch_model.bin",
+            "model.safetensors",  # This is the correct filename
+            "pytorch_model.safetensors",
+            "model.pt",
+        ]
 
-        has_model = any((checkpoint_path / f).exists() for f in model_files)
-        return has_model
+        for model_file in model_files:
+            if (checkpoint_path / model_file).exists():
+                logger.info(f"  Found model file: {model_file}")
+                return True
+
+        logger.info(f"  No model files found in {checkpoint_path}")
+        logger.info(f"  Available files: {[f.name for f in checkpoint_path.iterdir()]}")
+        return False
 
     def _extract_checkpoint_step(self, checkpoint_path: Path) -> int:
         """Extract checkpoint step number from checkpoint path."""
@@ -170,129 +140,39 @@ class CheckpointManager:
         logger.warning(f"Could not extract step from {path_str}, using step=0")
         return 0
 
-    def _generate_model_id(self, model_variant: str, checkpoint_step: int, checkpoint_path: Path) -> str:
-        """Generate unique model identifier."""
-        components = [
-            model_variant,
-            f"step{checkpoint_step}",
-        ]
+    def load_model_checkpoint(self, metadata: dict):
+        """Simplified model loading."""
+        logger.info(f"Loading checkpoint: {metadata['model_id']}")
 
-        # Add path hash for uniqueness in case of conflicts
-        path_hash = str(abs(hash(str(checkpoint_path))))[-6:]
-        components.append(path_hash)
-
-        return "_".join(components)
-
-    def _print_discovery_summary(self, metadata_list: list[ModelMetadata]) -> None:
-        """Print summary of discovered checkpoints."""
-        if not metadata_list:
-            logger.info("No checkpoints found")
-            return
-
-        steps = [meta.checkpoint_step for meta in metadata_list]
-        logger.info("\nCheckpoint Discovery Summary:")
-        logger.info("-" * 50)
-        logger.info(f"Model variant: {self.config.model_variant}")
-        logger.info(f"Task name: {metadata_list[0].task_name}")
-        logger.info(f"Shuffle before packing: {metadata_list[0].shuffle_before_packing}")
-        logger.info(f"Seed balanced batching: {metadata_list[0].seed_balanced_batching}")
-        logger.info(f"Total checkpoints: {len(steps)}")
-        logger.info(f"Step range: {min(steps)} - {max(steps)}")
-        logger.info(f"Steps: {sorted(steps)}")
-
-    def load_model_checkpoint(self, metadata: ModelMetadata, cache: bool = True) -> tuple[t.Any, t.Any]:
-        """Load model and tokenizer from checkpoint."""
-        if cache and metadata.model_id in self._checkpoint_cache:
-            return self._checkpoint_cache[metadata.model_id]
-
-        logger.info(f"Loading checkpoint: {metadata.model_id}")
-
-        try:
-            # Load tokenizer
-            tokenizer = RHMTokenizer.from_pretrained(metadata.checkpoint_path, trust_remote_code=True)
-
-            # Ensure tokenizer has pad token
-            if tokenizer.pad_token is None:
-                if tokenizer.eos_token is not None:
-                    tokenizer.pad_token = tokenizer.eos_token
-                else:
-                    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-
-            # Load model based on task type
-            if metadata.task_name == "clm":
-                model = AutoModelForCausalLM.from_pretrained(
-                    metadata.checkpoint_path,
-                    trust_remote_code=True,
-                    torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
-                )
-            elif metadata.task_name == "mlm":
-                model = AutoModelForMaskedLM.from_pretrained(
-                    metadata.checkpoint_path,
-                    trust_remote_code=True,
-                    torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
-                )
+        # Load tokenizer
+        tokenizer = RHMTokenizer.from_pretrained(metadata["checkpoint_path"], trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            if tokenizer.eos_token is not None:
+                tokenizer.pad_token = tokenizer.eos_token
             else:
-                raise ValueError(f"Unsupported task type: {metadata.task_name}")
+                tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
-            # Move to device
-            model = model.to(self.device)
-            model.eval()
+        # Load model based on model_type
+        if self.config.model_type == "clm":
+            model = AutoModelForCausalLM.from_pretrained(
+                metadata["checkpoint_path"],
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
+            )
+        elif self.config.model_type == "mlm":
+            model = AutoModelForMaskedLM.from_pretrained(
+                metadata["checkpoint_path"],
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if self.device.type == "cuda" else torch.float32,
+            )
+        else:
+            raise ValueError(f"Unsupported model type: {self.config.model_type}")
 
-            # Resize embeddings if tokenizer was modified
-            if len(tokenizer) != model.get_input_embeddings().num_embeddings:
-                model.resize_token_embeddings(len(tokenizer))
+        model = model.to(self.device)
+        model.eval()
 
-            if cache:
-                self._checkpoint_cache[metadata.model_id] = (model, tokenizer)
+        # Resize embeddings if needed
+        if len(tokenizer) != model.get_input_embeddings().num_embeddings:
+            model.resize_token_embeddings(len(tokenizer))
 
-            return model, tokenizer
-
-        except Exception as e:
-            raise RuntimeError(f"Failed to load checkpoint {metadata.checkpoint_path}: {e}")
-
-    def validate_checkpoint_completeness(self, metadata_list: list[ModelMetadata]) -> dict[str, t.Any]:
-        """Validate checkpoint discovery and provide statistics."""
-        validation_results = {
-            "total_checkpoints": len(metadata_list),
-            "model_variant": self.config.model_variant,
-            "step_coverage": {},
-            "training_phases": {},
-        }
-
-        if not metadata_list:
-            return validation_results
-
-        # Analyze step coverage
-        steps = [meta.checkpoint_step for meta in metadata_list]
-        validation_results["step_coverage"] = {
-            "min_step": min(steps),
-            "max_step": max(steps),
-            "step_count": len(steps),
-            "steps": sorted(steps),
-        }
-
-        # Analyze training phase distribution
-        from collections import defaultdict
-
-        phase_counts = defaultdict(int)
-        for meta in metadata_list:
-            phase = determine_training_phase(meta.checkpoint_step, max(steps))
-            phase_counts[phase] += 1
-
-        validation_results["training_phases"] = dict(phase_counts)
-
-        return validation_results
-
-    def clear_cache(self) -> None:
-        """Clear the model cache to free memory."""
-        for model, tokenizer in self._checkpoint_cache.values():
-            if hasattr(model, "cpu"):
-                model.cpu()
-            del model, tokenizer
-
-        self._checkpoint_cache.clear()
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        logger.info("Cleared checkpoint cache")
+        return model, tokenizer

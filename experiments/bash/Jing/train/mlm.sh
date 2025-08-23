@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=train_mlm
 #SBATCH --export=ALL
-#SBATCH --partition=gpu
+#SBATCH --partition=erc-cristia
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch2/jliu/ICL/logs/trai/uniform_allmix_576_42_clm.log
+#SBATCH --output=/scratch2/jliu/ICL/logs/train/uniform_allmix_576_42_clm.log
 
 SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/train"
 
@@ -15,9 +15,11 @@ DATASET_TYPE="uniform"
 MODEL_TYPE="mlm"
 NUM_SEEDS=10
 SEED=42
+L=4
+M=2
 
 # Construct shared arguments (updated to match new argument structure)
-SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED"
+SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED --L $L --M $M"
 
 # Optional pipeline controls
 PIPELINE_ARGS="--verbose"
