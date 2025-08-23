@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class RHMTrainer(Trainer):
-    """RHM trainer with seed-aware batching and hierarchical metrics."""
+    """RHM trainer with seed-aware batching, hierarchical metrics, and accuracy tracking."""
 
     def __init__(
         self,
@@ -43,7 +43,7 @@ class RHMTrainer(Trainer):
         config: RHMTrainingConfig | None = None,
         **kwargs,
     ):
-        """Initialize RHM trainer with seed-aware datasets.
+        """Initialize RHM trainer with seed-aware datasets and accuracy tracking.
 
         Args:
             model: The model to train
@@ -63,7 +63,6 @@ class RHMTrainer(Trainer):
         # We'll create combined datasets for the parent Trainer
         # The actual seed-aware batching is handled by our custom dataloader
         train_dataset = CombinedSeedDataset(train_seed_datasets) if train_seed_datasets else None
-
         eval_dataset = CombinedSeedDataset(eval_seed_datasets) if eval_seed_datasets else None
 
         # Initialize parent without data_collator - we'll override get_train_dataloader
@@ -77,9 +76,9 @@ class RHMTrainer(Trainer):
             **kwargs,
         )
 
-        # Track seed-specific metrics
+        # UPDATED: Track both loss and accuracy metrics per seed
         self.seed_metrics = defaultdict(list)
-        self.epoch_seed_stats = defaultdict(dict)
+        self.epoch_seed_stats = defaultdict(lambda: defaultdict(lambda: {"losses": [], "accuracies": []}))
 
     def get_train_dataloader(self):
         """Create training dataloader with seed-aware batching."""
@@ -114,30 +113,50 @@ class RHMTrainer(Trainer):
         return dataloader
 
     def compute_loss(self, model, inputs, return_outputs=False):
-        """Compute loss with seed tracking."""
+        """Compute loss with seed tracking and accuracy calculation."""
         # Extract seed information if available
         seeds = inputs.pop("seeds", None)
 
-        # Standard loss computation
-        loss_outputs = super().compute_loss(model, inputs, return_outputs)
+        # Get labels for accuracy computation
+        labels = inputs.get("labels")
 
-        if return_outputs:
-            loss, outputs = loss_outputs
-        else:
-            loss = loss_outputs
-            outputs = None
+        # Standard loss computation - get outputs for accuracy calculation
+        outputs = model(**inputs)
+        loss = outputs.loss
 
-        # Track per-seed loss if seed information is available
+        # NEW: Compute accuracy alongside loss
+        accuracy = None
+        if labels is not None:
+            accuracy = self._compute_accuracy(outputs.logits, labels)
+
+        # Track per-seed metrics if seed information is available
         if seeds is not None and hasattr(self, "_current_epoch"):
-            self._track_seed_loss(seeds, loss)
+            self._track_seed_metrics(seeds, loss, accuracy)
 
         # Return in the same format as parent
         if return_outputs:
             return loss, outputs
         return loss
 
-    def _track_seed_loss(self, seeds: torch.Tensor, loss: torch.Tensor):
-        """Track loss per seed for analysis."""
+    def _compute_accuracy(self, logits: torch.Tensor, labels: torch.Tensor) -> float:
+        """Compute token-level accuracy for valid (non-masked) positions."""
+        # Get predictions
+        predictions = torch.argmax(logits, dim=-1)
+
+        # Create mask for valid positions (labels != -100)
+        valid_mask = labels != -100
+
+        # Calculate accuracy only for valid positions
+        if valid_mask.sum() == 0:
+            return 0.0
+
+        correct_predictions = (predictions == labels) & valid_mask
+        accuracy = correct_predictions.sum().float() / valid_mask.sum().float()
+
+        return accuracy.cpu().item()
+
+    def _track_seed_metrics(self, seeds: torch.Tensor, loss: torch.Tensor, accuracy: float | None):
+        """Track both loss and accuracy per seed for analysis."""
         current_epoch = getattr(self, "_current_epoch", 0)
 
         # Convert to CPU and detach
@@ -147,12 +166,13 @@ class RHMTrainer(Trainer):
         # Group by seed
         for seed in seeds_cpu:
             seed = int(seed)
-            if current_epoch not in self.epoch_seed_stats:
-                self.epoch_seed_stats[current_epoch] = {}
-            if seed not in self.epoch_seed_stats[current_epoch]:
-                self.epoch_seed_stats[current_epoch][seed] = []
 
-            self.epoch_seed_stats[current_epoch][seed].append(loss_cpu)
+            # Store loss
+            self.epoch_seed_stats[current_epoch][seed]["losses"].append(loss_cpu)
+
+            # Store accuracy if available
+            if accuracy is not None:
+                self.epoch_seed_stats[current_epoch][seed]["accuracies"].append(accuracy)
 
     def on_epoch_begin(self, args, state, control, **kwargs):
         """Track epoch beginning for seed-specific metrics."""
@@ -166,18 +186,28 @@ class RHMTrainer(Trainer):
         if current_epoch in self.epoch_seed_stats:
             logger.info(f"Epoch {current_epoch} seed statistics:")
 
-            for seed, losses in self.epoch_seed_stats[current_epoch].items():
+            for seed, metrics in self.epoch_seed_stats[current_epoch].items():
+                losses = metrics["losses"]
+                accuracies = metrics["accuracies"]
+
                 if losses:
                     avg_loss = sum(losses) / len(losses)
-                    logger.info(f"  Seed {seed}: avg_loss={avg_loss:.4f} (n={len(losses)})")
+                    avg_acc = sum(accuracies) / len(accuracies) if accuracies else 0.0
+
+                    logger.info(f"  Seed {seed}: avg_loss={avg_loss:.4f}, avg_acc={avg_acc:.4f} (n={len(losses)})")
 
                     # Store for later analysis
                     self.seed_metrics[seed].append(
-                        {"epoch": current_epoch, "avg_loss": avg_loss, "num_batches": len(losses)}
+                        {
+                            "epoch": current_epoch,
+                            "avg_loss": avg_loss,
+                            "avg_accuracy": avg_acc,
+                            "num_batches": len(losses),
+                        }
                     )
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
-        """Enhanced evaluation with seed-specific metrics."""
+        """Enhanced evaluation with seed-specific metrics including accuracy."""
         # Standard evaluation
         results = super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
 
@@ -186,20 +216,26 @@ class RHMTrainer(Trainer):
             hierarchical_metrics = self._compute_hierarchical_metrics()
             results.update(hierarchical_metrics)
 
-        # Add seed-specific evaluation metrics
+        # Add seed-specific evaluation metrics (both loss and accuracy)
         current_epoch = getattr(self, "_current_epoch", 0)
         if current_epoch in self.epoch_seed_stats:
             for seed in self.train_seed_datasets.keys():
                 if seed in self.epoch_seed_stats[current_epoch]:
-                    losses = self.epoch_seed_stats[current_epoch][seed]
+                    metrics = self.epoch_seed_stats[current_epoch][seed]
+                    losses = metrics["losses"]
+                    accuracies = metrics["accuracies"]
+
                     if losses:
                         results[f"eval_seed_{seed}_loss"] = sum(losses) / len(losses)
                         results[f"eval_seed_{seed}_count"] = len(losses)
 
+                    if accuracies:
+                        results[f"eval_seed_{seed}_accuracy"] = sum(accuracies) / len(accuracies)
+
         return results
 
     def _compute_hierarchical_metrics(self) -> dict[str, float]:
-        """Compute hierarchical-specific metrics."""
+        """Compute hierarchical-specific metrics including accuracy variance."""
         # Enhanced hierarchical metrics
         metrics = {
             "eval_hierarchical_accuracy": 0.0,
@@ -207,15 +243,22 @@ class RHMTrainer(Trainer):
             "eval_special_token_perplexity": 0.0,
         }
 
-        # Add seed diversity metrics
+        # Add seed diversity metrics for both loss and accuracy
         current_epoch = getattr(self, "_current_epoch", 0)
         if current_epoch in self.epoch_seed_stats:
             seed_losses = []
+            seed_accuracies = []
+
             for seed in self.train_seed_datasets.keys():
                 if seed in self.epoch_seed_stats[current_epoch]:
-                    losses = self.epoch_seed_stats[current_epoch][seed]
+                    metrics_data = self.epoch_seed_stats[current_epoch][seed]
+                    losses = metrics_data["losses"]
+                    accuracies = metrics_data["accuracies"]
+
                     if losses:
                         seed_losses.append(sum(losses) / len(losses))
+                    if accuracies:
+                        seed_accuracies.append(sum(accuracies) / len(accuracies))
 
             if len(seed_losses) > 1:
                 import statistics
@@ -223,46 +266,69 @@ class RHMTrainer(Trainer):
                 metrics["eval_seed_loss_variance"] = statistics.variance(seed_losses)
                 metrics["eval_seed_loss_std"] = statistics.stdev(seed_losses)
 
+            if len(seed_accuracies) > 1:
+                import statistics
+
+                metrics["eval_seed_accuracy_variance"] = statistics.variance(seed_accuracies)
+                metrics["eval_seed_accuracy_std"] = statistics.stdev(seed_accuracies)
+                metrics["eval_avg_seed_accuracy"] = sum(seed_accuracies) / len(seed_accuracies)
+
             metrics["eval_active_seeds"] = len(seed_losses)
 
         return metrics
 
     def save_model(self, output_dir=None, _internal_call=False):
-        """Save model with enhanced metadata including seed information."""
+        """Save model with enhanced metadata including seed information and accuracy."""
         # Save using parent method
         super().save_model(output_dir, _internal_call)
 
-        # Save seed-specific training metrics
+        # Save seed-specific training metrics including accuracy
         if output_dir is None:
             output_dir = self.args.output_dir
 
         output_path = Path(output_dir)
 
-        # Save seed metrics
+        # Save seed metrics with both loss and accuracy
+        import json
+
         seed_metrics_file = output_path / "seed_training_metrics.json"
+
+        # Process epoch stats to include both loss and accuracy
+        processed_epoch_stats = {}
+        for epoch, seed_data in self.epoch_seed_stats.items():
+            processed_epoch_stats[epoch] = {}
+            for seed, metrics in seed_data.items():
+                losses = metrics["losses"]
+                accuracies = metrics["accuracies"]
+                processed_epoch_stats[epoch][seed] = {
+                    "avg_loss": sum(losses) / len(losses) if losses else 0,
+                    "avg_accuracy": sum(accuracies) / len(accuracies) if accuracies else 0,
+                    "num_batches": len(losses),
+                }
 
         seed_metrics_data = {
             "seed_metrics": dict(self.seed_metrics),
-            "epoch_seed_stats": {
-                epoch: {
-                    seed: {"avg_loss": sum(losses) / len(losses) if losses else 0, "num_batches": len(losses)}
-                    for seed, losses in seed_data.items()
-                }
-                for epoch, seed_data in self.epoch_seed_stats.items()
-            },
+            "epoch_seed_stats": processed_epoch_stats,
             "training_config": {
                 "seed_balanced_batching": self.rhm_config.seed_balanced_batching,
                 "seed_sampling_strategy": self.rhm_config.seed_sampling_strategy,
                 "seeds_per_batch": self.rhm_config.seeds_per_batch,
                 "shuffle_before_packing": self.rhm_config.shuffle_before_packing,
                 "shuffle_strategy": self.rhm_config.shuffle_strategy,
+                "last_token_prediction": self.rhm_config.last_token_prediction,
+                "save_by_steps": self.rhm_config.save_by_steps,
             },
             "available_seeds": list(self.train_seed_datasets.keys()),
         }
 
+        with open(seed_metrics_file, "w") as f:
+            json.dump(seed_metrics_data, f, indent=2)
+
+        logger.info(f"Saved seed training metrics (loss + accuracy) to: {seed_metrics_file}")
+
 
 class SeedMetricsCallback(TrainerCallback):
-    """Callback for enhanced seed-specific metrics tracking."""
+    """Callback for enhanced seed-specific metrics tracking including accuracy."""
 
     def __init__(self, config: RHMTrainingConfig, tokenizer: RHMTokenizer):
         """Initialize seed metrics callback."""
@@ -277,11 +343,17 @@ class SeedMetricsCallback(TrainerCallback):
         logger.info(f"Seed balanced batching: {self.config.seed_balanced_batching}")
         logger.info(f"Seed sampling strategy: {self.config.seed_sampling_strategy}")
         logger.info(f"Seeds per batch: {self.config.seeds_per_batch}")
+        logger.info(f"Last token prediction: {self.config.last_token_prediction}")
 
     def on_epoch_end(self, args, state, control, **kwargs):
         """Log epoch completion with checkpoint information."""
         logger.info(f"=== EPOCH {self.epoch_count} END ===")
-        logger.info(f"Checkpoint saved at: {args.output_dir}")
+
+        # Log save strategy
+        if self.config.save_by_steps:
+            logger.info(f"Checkpoint strategy: every {self.config.save_steps_interval} steps")
+        else:
+            logger.info(f"Checkpoint saved at: {args.output_dir}")
 
         # Log current learning rate
         if hasattr(state, "log_history") and state.log_history:
@@ -290,19 +362,47 @@ class SeedMetricsCallback(TrainerCallback):
                 logger.info(f"Learning rate: {last_log['learning_rate']:.2e}")
 
     def on_evaluate(self, args, state, control, model, logs=None, **kwargs):
-        """Enhanced evaluation logging with seed information."""
+        """Enhanced evaluation logging with seed information and accuracy."""
         if logs is None:
             return
 
         logger.info(f"Evaluation at epoch {self.epoch_count}:")
         logger.info(f"  Eval loss: {logs.get('eval_loss', 'N/A'):.4f}")
 
-        # Log seed-specific metrics if available
-        seed_metrics = {k: v for k, v in logs.items() if k.startswith("eval_seed_")}
-        if seed_metrics:
+        # Log seed-specific metrics if available (both loss and accuracy)
+        seed_loss_metrics = {k: v for k, v in logs.items() if k.startswith("eval_seed_") and k.endswith("_loss")}
+        seed_acc_metrics = {k: v for k, v in logs.items() if k.startswith("eval_seed_") and k.endswith("_accuracy")}
+
+        if seed_loss_metrics or seed_acc_metrics:
             logger.info("  Seed-specific metrics:")
-            for metric, value in seed_metrics.items():
-                logger.info(f"    {metric}: {value:.4f}")
+
+            # Group metrics by seed
+            seeds = set()
+            for metric in seed_loss_metrics:
+                seed = metric.split("_")[2]  # extract seed from eval_seed_X_loss
+                seeds.add(seed)
+            for metric in seed_acc_metrics:
+                seed = metric.split("_")[2]  # extract seed from eval_seed_X_accuracy
+                seeds.add(seed)
+
+            for seed in sorted(seeds):
+                loss_key = f"eval_seed_{seed}_loss"
+                acc_key = f"eval_seed_{seed}_accuracy"
+                loss_val = logs.get(loss_key, "N/A")
+                acc_val = logs.get(acc_key, "N/A")
+
+                if isinstance(loss_val, (int, float)) and isinstance(acc_val, (int, float)):
+                    logger.info(f"    Seed {seed}: loss={loss_val:.4f}, acc={acc_val:.4f}")
+                elif isinstance(loss_val, (int, float)):
+                    logger.info(f"    Seed {seed}: loss={loss_val:.4f}, acc={acc_val}")
+                else:
+                    logger.info(f"    Seed {seed}: loss={loss_val}, acc={acc_val}")
+
+        # Log aggregate accuracy metrics
+        if "eval_avg_seed_accuracy" in logs:
+            logger.info(f"  Average seed accuracy: {logs['eval_avg_seed_accuracy']:.4f}")
+        if "eval_seed_accuracy_std" in logs:
+            logger.info(f"  Seed accuracy std: {logs['eval_seed_accuracy_std']:.4f}")
 
     def on_train_begin(self, args, state, control, **kwargs):
         """Log training configuration at start."""
@@ -313,13 +413,86 @@ class SeedMetricsCallback(TrainerCallback):
         logger.info(f"  Seed sampling strategy: {self.config.seed_sampling_strategy}")
         logger.info(f"  Cross-config shuffling: {self.config.shuffle_before_packing}")
         logger.info(f"  Shuffle strategy: {self.config.shuffle_strategy}")
-        logger.info(f"  Checkpointing: {args.save_strategy} every {args.save_steps}")
+        logger.info(f"  Last token prediction: {self.config.last_token_prediction}")
+
+        # Log checkpointing strategy
+        if self.config.save_by_steps:
+            logger.info(f"  Checkpointing: every {self.config.save_steps_interval} steps")
+        else:
+            logger.info("  Checkpointing: every epoch")
 
     def on_train_end(self, args, state, control, **kwargs):
         """Log training completion."""
         logger.info("=== TRAINING COMPLETE ===")
         logger.info(f"Total epochs completed: {self.epoch_count}")
         logger.info(f"Final model saved to: {args.output_dir}")
+
+
+class HierarchicalMetricsCallback(TrainerCallback):
+    """Callback for computing hierarchical-specific metrics during training."""
+
+    def __init__(self, eval_dataset: Dataset, config: RHMTrainingConfig, tokenizer: RHMTokenizer):
+        """Initialize metrics callback.
+
+        Args:
+            eval_dataset: Evaluation dataset for computing metrics
+            config: Training configuration
+            tokenizer: RHM tokenizer instance
+
+        """
+        self.eval_dataset = eval_dataset
+        self.config = config
+        self.tokenizer = tokenizer
+        self.step_count = 0
+
+    def on_evaluate(self, args, state, control, model, logs=None, **kwargs):
+        """Compute additional metrics during evaluation."""
+        if logs is None:
+            return
+
+        self.step_count += 1
+
+        # Add hierarchical evaluation metrics
+        logs["hierarchical_eval_count"] = self.step_count
+
+        # Track special token usage and accuracy
+        if hasattr(model, "get_input_embeddings"):
+            embeddings = model.get_input_embeddings()
+
+            special_tokens = {
+                "pad": self.tokenizer.pad_token_id,
+                "eos": self.tokenizer.eos_token_id,
+                "sep": self.tokenizer.sep_token_id,
+                "mask": self.tokenizer.mask_token_id,
+            }
+
+            for token_name, token_id in special_tokens.items():
+                if token_id < embeddings.num_embeddings:
+                    norm = torch.norm(embeddings.weight[token_id]).item()
+                    logs[f"special_token_{token_name}_norm"] = norm
+
+        # Log enhanced evaluation info
+        logger.info(f"Hierarchical evaluation #{self.step_count} completed")
+        logger.info(f"Current eval loss: {logs.get('eval_loss', 'N/A'):.4f}")
+
+        # Log accuracy if available
+        if "eval_avg_seed_accuracy" in logs:
+            logger.info(f"Current eval accuracy: {logs['eval_avg_seed_accuracy']:.4f}")
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Log tokenizer information at training start."""
+        logger.info(f"Training with RHM tokenizer (vocab_size: {self.tokenizer.vocab_size})")
+        logger.info(
+            f"Special tokens - PAD: {self.tokenizer.pad_token_id}, "
+            f"EOS: {self.tokenizer.eos_token_id}, "
+            f"SEP: {self.tokenizer.sep_token_id}, "
+            f"MASK: {self.tokenizer.mask_token_id}"
+        )
+
+        if self.config.last_token_prediction:
+            logger.info(
+                "Last-token prediction mode enabled - only final tokens in sentences will be used for loss computation"
+            )
 
 
 class HierarchicalMetricsCallback(TrainerCallback):
@@ -819,7 +992,7 @@ class CombinedSeedDataset:
 
 
 class SeedAwareDataCollator(DataCollatorForLanguageModeling):
-    """Data collator that handles seed-based batching while preserving packed sequence integrity."""
+    """Data collator that handles seed-based batching with optional last-token prediction masking."""
 
     def __init__(
         self,
@@ -829,8 +1002,9 @@ class SeedAwareDataCollator(DataCollatorForLanguageModeling):
         return_tensors: str = "pt",
         seed_balanced_batching: bool = True,
         seed_sampling_strategy: str = "balanced",
+        last_token_prediction: bool = False,
     ):
-        """Initialize seed-aware data collator."""
+        """Initialize seed-aware data collator with last-token prediction support."""
         super().__init__(
             tokenizer=tokenizer,
             mlm=mlm,
@@ -840,9 +1014,10 @@ class SeedAwareDataCollator(DataCollatorForLanguageModeling):
         self.rhm_tokenizer = tokenizer
         self.seed_balanced_batching = seed_balanced_batching
         self.seed_sampling_strategy = seed_sampling_strategy
+        self.last_token_prediction = last_token_prediction
 
     def torch_call(self, examples: list[dict[str, t.Any]]) -> dict[str, torch.Tensor]:
-        """Process batch with seed-aware handling and RHM-specific token masking."""
+        """Process batch with seed-aware handling and optional last-token prediction masking."""
         # Log seed composition of the batch
         if "seed" in examples[0]:
             seed_counts = defaultdict(int)
@@ -876,11 +1051,75 @@ class SeedAwareDataCollator(DataCollatorForLanguageModeling):
                 special_mask = result["input_ids"] == special_token_id
                 result["labels"][special_mask] = -100  # Don't compute loss on special tokens
 
+        # NEW: Apply last-token prediction masking if enabled
+        if self.last_token_prediction and "labels" in result:
+            result["labels"] = self._apply_last_token_masking(result["input_ids"], result["labels"])
+
         # Add seed information to the batch if available
         if "seed" in examples[0]:
             result["seeds"] = torch.tensor([example["seed"] for example in examples])
 
         return result
+
+    def _apply_last_token_masking(self, input_ids: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Apply last-token prediction masking to labels tensor."""
+        batch_size, seq_len = input_ids.shape
+        masked_labels = labels.clone()
+
+        for batch_idx in range(batch_size):
+            sequence = input_ids[batch_idx]
+            sequence_labels = masked_labels[batch_idx]
+
+            # Find sentence boundaries using separator and EOS tokens
+            sentence_boundaries = self._find_sentence_boundaries(sequence)
+
+            # For each sentence, mask all tokens except the last one
+            for start_idx, end_idx in sentence_boundaries:
+                if end_idx > start_idx:  # Valid sentence span
+                    # Mask all tokens in sentence except the last one
+                    if end_idx - start_idx > 1:  # Only if sentence has more than 1 token
+                        sequence_labels[start_idx : end_idx - 1] = -100
+                    # Keep the last token (at end_idx-1) for loss computation
+
+        return masked_labels
+
+    def _find_sentence_boundaries(self, sequence: torch.Tensor) -> list[tuple[int, int]]:
+        """Find sentence boundaries in a packed sequence using separator tokens."""
+        boundaries = []
+        start_idx = 0
+
+        sep_token_id = self.rhm_tokenizer.sep_token_id
+        eos_token_id = self.rhm_tokenizer.eos_token_id
+        pad_token_id = self.rhm_tokenizer.pad_token_id
+
+        # Convert to CPU numpy for easier processing
+        seq_cpu = sequence.cpu().numpy()
+
+        for i, token_id in enumerate(seq_cpu):
+            # Skip padding tokens
+            if token_id == pad_token_id:
+                break
+
+            # Check for sentence ending tokens
+            if token_id in [sep_token_id, eos_token_id]:
+                # Found end of sentence
+                if i > start_idx:  # Non-empty sentence
+                    boundaries.append((start_idx, i))  # Exclude the separator itself
+                start_idx = i + 1  # Next sentence starts after separator
+
+        # Handle last sentence if it doesn't end with separator/eos
+        if start_idx < len(seq_cpu):
+            # Find last non-padding token
+            last_valid_idx = len(seq_cpu)
+            for j in range(len(seq_cpu) - 1, -1, -1):
+                if seq_cpu[j] != pad_token_id:
+                    last_valid_idx = j + 1
+                    break
+
+            if last_valid_idx > start_idx:
+                boundaries.append((start_idx, last_valid_idx))
+
+        return boundaries
 
 
 class SeedBalancedSampler(Sampler):
@@ -1016,21 +1255,23 @@ def create_seed_aware_dataloader(
     tokenizer: RHMTokenizer,
     is_training: bool = True,
 ) -> DataLoader:
-    """Create a dataloader with seed-aware batching."""
+    """Create a dataloader with seed-aware batching and optional last-token prediction."""
     # Combine seed datasets
     combined_dataset = CombinedSeedDataset(seed_datasets)
 
-    # Create data collator
+    # Create data collator with last-token prediction support
     data_collator = SeedAwareDataCollator(
         tokenizer=tokenizer,
         mlm=config.mlm,
         mlm_probability=config.mlm_probability,
         seed_balanced_batching=config.seed_balanced_batching,
         seed_sampling_strategy=config.seed_sampling_strategy,
+        last_token_prediction=config.last_token_prediction,
     )
 
     # Determine batch size
     batch_size = config.per_device_train_batch_size if is_training else config.per_device_eval_batch_size
+
     # Create sampler if seed-balanced batching is enabled
     sampler = None
     shuffle = False
@@ -1064,6 +1305,7 @@ def create_seed_aware_dataloader(
     logger.info(f"  Seed balanced batching: {config.seed_balanced_batching}")
     logger.info(f"  Seed sampling strategy: {config.seed_sampling_strategy}")
     logger.info(f"  Seeds per batch: {config.seeds_per_batch}")
+    logger.info(f"  Last token prediction: {config.last_token_prediction}")
     logger.info(f"  Number of seeds: {len(seed_datasets)}")
 
     return dataloader

@@ -66,10 +66,15 @@ class RHMTrainingConfig:
     seed_sampling_strategy: str = "balanced"  # "balanced", "random", "weighted"
     seeds_per_batch: int | None = None  # None = use all available seeds
 
-    # Checkpoint configuration - UPDATED for epoch-based checkpointing
-    save_strategy: str = "epoch"  # Changed from "steps" to "epoch"
-    save_steps: int = 1  # Save every epoch
-    save_total_limit: int = 10  # Keep more checkpoints for epoch-based saving
+    # NEW: Last-token prediction configuration
+    last_token_prediction: bool = False  # Enable last-token prediction masking
+
+    # UPDATED: Checkpoint configuration with steps option
+    save_by_steps: bool = False  # NEW: If True, save by steps instead of epochs
+    save_steps_interval: int = 500  # NEW: Steps interval when save_by_steps=True
+    save_strategy: str = "epoch"  # Will be set based on save_by_steps
+    save_steps: int = 1  # Will be set based on save_by_steps
+    save_total_limit: int = 10
     load_best_model_at_end: bool = True
     metric_for_best_model: str = "eval_loss"
     greater_is_better: bool = False
@@ -149,14 +154,26 @@ class RHMTrainingConfig:
         else:
             parts.append("noseed")
 
+        # Add last token prediction info
+        if self.last_token_prediction:
+            parts.append("lasttoken")
+
         return "_".join(parts)
 
     def to_training_arguments(self) -> TrainingArguments:
-        """Convert to HuggingFace TrainingArguments with epoch-based checkpointing."""
+        """Convert to HuggingFace TrainingArguments with flexible checkpointing."""
+        # Determine save strategy based on save_by_steps
+        if self.save_by_steps:
+            save_strategy = "steps"
+            save_steps = self.save_steps_interval
+        else:
+            save_strategy = "epoch"
+            save_steps = 1
+
         training_args_dict = {
             "output_dir": self.output_dir,
-            "save_strategy": self.save_strategy,  # "epoch"
-            "save_steps": self.save_steps,  # 1 (every epoch)
+            "save_strategy": save_strategy,
+            "save_steps": save_steps,
             "save_total_limit": self.save_total_limit,
             "load_best_model_at_end": self.load_best_model_at_end,
             "num_train_epochs": self.num_train_epochs,
@@ -169,8 +186,8 @@ class RHMTrainingConfig:
             "lr_scheduler_type": self.lr_scheduler_type,
             "metric_for_best_model": self.metric_for_best_model,
             "greater_is_better": self.greater_is_better,
-            "evaluation_strategy": self.evaluation_strategy,  # "epoch"
-            "eval_steps": self.eval_steps,  # 1 (every epoch)
+            "evaluation_strategy": self.evaluation_strategy,
+            "eval_steps": self.eval_steps,
             "eval_accumulation_steps": self.eval_accumulation_steps,
             "logging_strategy": self.logging_strategy,
             "logging_steps": self.logging_steps,
@@ -207,8 +224,8 @@ class RHMTrainingConfig:
                 "learning_rate": self.learning_rate,
                 "evaluation_strategy": self.evaluation_strategy,
                 "eval_steps": self.eval_steps,
-                "save_strategy": self.save_strategy,
-                "save_steps": self.save_steps,
+                "save_strategy": save_strategy,
+                "save_steps": save_steps,
                 "logging_steps": self.logging_steps,
                 "seed": self.seed,
             }
