@@ -11,11 +11,13 @@ import yaml
 from datasets import Dataset
 
 from ICL.datasets.RHM import RandomHierarchyModel
-from ICL.settings import DatasetConfig, create_base_parser, parse_dataset_config, validate_args
+from ICL.settings import DatasetConfig, create_base_parser
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+# TODO: integrate in the package
 
 
 class GlobalSequenceTracker:
@@ -595,7 +597,7 @@ def save_dataset_with_metadata(
             f.write("Deduplication Results:\n")
             dedup_stats = metadata["deduplication_stats"]
             f.write(f"  Global unique sequences: {dedup_stats['global_unique_sequences']:,}\n")
-            # f.write(f"  Total collisions prevented: {dedup_stats['total_collisions']:,}\n")
+            f.write(f"  Total collisions prevented: {dedup_stats['total_collisions']:,}\n")
             f.write(f"  Average generation efficiency: {dedup_stats['average_efficiency']:.2%}\n\n")
 
         f.write("Seed Information:\n")
@@ -673,67 +675,9 @@ def load_config_for_dataset(dataset_config: DatasetConfig) -> dict[str, Any]:
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
 
-def main():
-    """Main dataset generation function."""
-    parser = create_dataset_parser()
-    args = parser.parse_args()
-
-    # Validate arguments
-    validate_args(args)
-
-    # Convert to dataset config (L,M now come from command line)
-    dataset_config = parse_dataset_config(args)
-
-    # Log the configuration
-    logger.info(f"Dataset configuration: {dataset_config.to_name()}")
-    logger.info(f"Using L={dataset_config.L}, m={dataset_config.m} from command line")
-
-    if args.validate_only:
-        logger.info(f"Configuration validation successful for {dataset_config.to_name()}")
-        return
-
-    # Load YAML configuration for this dataset setup
-    yaml_config = load_config_for_dataset(dataset_config)
-
-    # Generate the actual list of random seeds
-    random_seeds = generate_random_seeds(dataset_config.seed, dataset_config.num_seeds)
-
-    # Check whether deduplication is enabled from YAML
-    dedup_enabled = yaml_config.get("deduplication", {}).get("enabled", True)
-
-    # Generate dataset using dedup or original method
-    if dedup_enabled:
-        logger.info("Deduplication ENABLED — using generate_rhm_dataset_with_deduplication()")
-        seed_datasets, metadata = generate_rhm_dataset_with_deduplication(
-            dataset_config.L,
-            dataset_config.m,
-            random_seeds,  # Now passing actual list of seeds
-            yaml_config,
-        )
-    else:
-        logger.info("Deduplication DISABLED — using generate_rhm_dataset_original()")
-        seed_datasets, metadata = generate_rhm_dataset_original(
-            dataset_config.L,
-            dataset_config.m,
-            random_seeds,  # Now passing actual list of seeds
-            yaml_config,
-        )
-
-    # Save datasets and metadata to disk
-    save_dataset_with_metadata(seed_datasets, metadata, dataset_config, args)
-
-    logger.info(f"✅ Completed dataset generation for {dataset_config.to_name()}")
-    logger.info("=" * 80)
-    logger.info("Dataset successfully generated and saved.")
-
-
 def generate_random_seeds(base_seed: int, num_seeds: int) -> list[int]:
     """Generate a list of random seeds from a base seed."""
     import random
 
     random.seed(base_seed)
     return [random.randint(0, 2**31 - 1) for _ in range(num_seeds)]
-
-
-if __name__ == "__main__":
-    main()

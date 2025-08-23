@@ -4,7 +4,7 @@
 collection_config:
   # Evaluation parameters (original)
   evaluation_parameters:
-    context_sizes: [1, 2, 3, 4, 5]
+    context_sizes: [1, 5, 10, 15, 20, 25]
     control_types: ["normal", "shuffled_context", "random_context"]
 
   # Execution parameters (original + new memory management)
