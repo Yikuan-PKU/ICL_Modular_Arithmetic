@@ -1,0 +1,32 @@
+# train_dataset.yaml
+# Complete configuration for RHM dataset generation and splitting
+# Place this file in: conf/RHM_5_L2_M2/train_dataset.yaml
+
+# RHM Generation Parameters
+rhm_params:
+  vocab_size: 32                     # Vocabulary size (number of features)
+  num_classes: 2                    # Number of output classes
+  tuple_size: 2                      # Size of low-level representations
+  samples_per_config: -1           # Number of sequences to generate per seed
+
+# Rule Distribution Configuration
+distribution:
+  type: "uniform"                    # "uniform" or "zipf"
+  zipf_alpha: 1.0                    # Only used if type is "zipf"
+
+# Dataset Configurations to Generate
+L: 3                             # Hierarchy depth
+m: 3                             # Multiplicity (number of synonyms)
+
+# NEW: Train/Validation Split Configuration
+split_config:
+  validation_ratio: 0.2              # 20% of sequences for validation
+  split_method: "sequential"         # "sequential" or "random"
+  min_sequences_per_split: 10        # Minimum sequences required per split
+  split_seed: 12345                  # Seed for reproducible random splits (null for no seed)
+
+# Optional: Advanced splitting parameters
+advanced_split:
+  preserve_seed_distribution: true   # Ensure each seed contributes to both splits
+  validate_split_integrity: true     # Check data integrity after splitting
+  create_split_reports: true         # Generate detailed split analysis reports

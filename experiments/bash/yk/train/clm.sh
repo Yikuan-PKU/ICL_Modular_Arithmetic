@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH -J train_clm
-#SBATCH -p gpu_4l
+#SBATCH -p gpu_l40
 #SBATCH -N 1
 #SBATCH -o RHM_%j.out
 #SBATCH -e RHM_%j.err
 #SBATCH --no-requeue
 #SBATCH -A qi_g1
-#SBATCH --qos=qig4c
-#SBATCH --gres=gpu:1
+#SBATCH --qos=qil40
+#SBATCH --gres=gpu:2
 #SBATCH --overcommit
 #SBATCH --mincpus=9
 
@@ -60,11 +60,13 @@ fi
 # Define experiment parameters using the new simplified structure
 DATASET_TYPE="uniform"
 MODEL_TYPE="clm"
-NUM_SEEDS=10
+NUM_SEEDS=2000
 SEED=42
+L=4
+M=2
 
 # Construct shared arguments (updated to match new argument structure)
-SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED"
+SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --L $L --M $M --num-seeds $NUM_SEEDS --seed $SEED"
 
 # Optional pipeline controls
 PIPELINE_ARGS="--verbose"

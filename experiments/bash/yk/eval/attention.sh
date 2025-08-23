@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH -J train_clm
-#SBATCH -p gpu_4l
+#SBATCH -J RHM_uniform
+#SBATCH -p gpu_l40
 #SBATCH -N 1
 #SBATCH -o RHM_%j.out
 #SBATCH -e RHM_%j.err
 #SBATCH --no-requeue
 #SBATCH -A qi_g1
-#SBATCH --qos=qig4c
-#SBATCH --gres=gpu:1
+#SBATCH --qos=qil40
+#SBATCH --gres=gpu:2
 #SBATCH --overcommit
 #SBATCH --mincpus=9
 

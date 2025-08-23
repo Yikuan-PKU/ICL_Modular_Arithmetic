@@ -1,0 +1,52 @@
+# Collection configuration for uniform_10_L4_M2
+# Only contains collection-specific parameters
+# Model variants auto-discovered from existing clm.yaml, mlm.yaml files
+# Place at: conf/uniform_10_L4_M2/collection.yaml
+
+# Base configuration - minimal
+base_config:
+  # Evaluation types to process (auto-discovered from datasets/uniform_10_L4_M2/eval/)
+  evaluation_types:
+
+    - "memorization"
+    - "id_generalization" 
+    - "ood_same_rule"
+    # - "ood_transfer"
+  
+  # Model variants auto-discovered from existing config files:
+  # - clm.yaml → clm_noshuffle_seedbalanced (if shuffle_before_packing=false, seed_balanced_batching=true)
+  # - mlm.yaml → mlm_noshuffle_seedbalanced (similar settings)
+  # Only 3 fields parsed: task_name, shuffle_before_packing, seed_balanced_batching
+
+
+# Collection-specific parameters (not in model configs)
+collection_config:
+  # Memory management - control attention data collection
+  capture_attention: false
+  
+  # Evaluation parameters
+  evaluation_parameters:
+    context_sizes:  [10, 20, 30, 40, 56]
+    control_types: 
+      - "normal"
+      # - "shuffled_context" 
+      # - "random_context"
+  
+  # Execution parameters
+  execution_parameters:
+    device: gpu
+    batch_size: 32
+    max_sequences_per_condition: 10
+    save_intermediate: true
+    intermediate_save_frequency: 5
+  
+  # Memory management
+  memory_management:
+    clear_cache_frequency: 10
+    max_memory_usage_gb: 12.0
+  
+  # Error handling
+  error_handling:
+    max_model_failures: 5
+    retry_failed_models: true
+    failure_retry_delay: 0

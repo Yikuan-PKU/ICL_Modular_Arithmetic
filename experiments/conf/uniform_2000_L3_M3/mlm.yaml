@@ -1,0 +1,74 @@
+# config/uniform_10_L4_M2/clm.yaml
+# CLM-specific training configuration with seed-aware batching
+L: 3
+M: 3
+# Model architecture
+vocab_size: 37
+hidden_size: 512
+num_hidden_layers: 6
+num_attention_heads: 8
+intermediate_size: 2048
+max_position_embeddings: 2048
+
+# Training parameters
+task_name: "mlm"
+num_train_epochs: 20
+per_device_train_batch_size: 32
+per_device_eval_batch_size: 64
+gradient_accumulation_steps: 1
+learning_rate: 1e-3
+weight_decay: 0.01
+warmup_ratio: 0.1
+lr_scheduler_type: "linear"
+
+# Sequence processing (FIXED - always pack)
+max_sequence_length: 512
+pack_sequences: true  # Always true, not configurable
+mlm: false  # CLM doesn't use masking
+
+# Cross-configuration shuffling (before packing)
+shuffle_before_packing: false
+shuffle_strategy: "global"  # "global", "balanced"
+shuffle_seed: 42
+
+seed_balanced_batching: true
+seed_sampling_strategy: "balanced"  # "balanced", "random", "weighted"
+seeds_per_batch: null  # null = use all available seeds
+
+# Epoch-based checkpointing (UPDATED)
+save_strategy: "epoch"
+save_steps: 1  # Save every epoch
+save_total_limit: 100
+load_best_model_at_end: true
+metric_for_best_model: "eval_loss"
+
+# Epoch-based evaluation (UPDATED)
+evaluation_strategy: "epoch"
+eval_steps: 1  # Evaluate every epoch
+
+# Logging
+logging_strategy: "steps"
+logging_steps: 50
+
+# Optimization
+adam_beta1: 0.9
+adam_beta2: 0.999
+max_grad_norm: 1.0
+
+# Dataset configuration
+train_split_ratio: 0.8
+max_samples_per_seed: null  # null = use all samples
+
+# Hierarchical metrics
+track_hierarchical_metrics: true
+
+# Reproducibility
+seed: 42
+
+# Logging and monitoring
+report_to: ["tensorboard"]
+run_name: null  # Will be auto-generated with enhanced naming
+
+# Mixed precision (optional)
+fp16: false
+bf16: false

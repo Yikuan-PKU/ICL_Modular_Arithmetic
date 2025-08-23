@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -J train_mlm
-#SBATCH -p gpu_4l
+#SBATCH -p gpu_l40
 #SBATCH -N 1
 #SBATCH -o RHM_%j.out
 #SBATCH -e RHM_%j.err
 #SBATCH --no-requeue
 #SBATCH -A qi_g1
-#SBATCH --qos=qig4c
+#SBATCH --qos=qil40
 #SBATCH --gres=gpu:2
 #SBATCH --overcommit
 #SBATCH --mincpus=9
@@ -53,49 +53,25 @@ else
     exit 1
 fi
 
-# Define experiment parameters
+# Define experiment parameters using the new simplified structure
 DATASET_TYPE="uniform"
 MODEL_TYPE="mlm"
-MIXTURE_TYPE="allmix"
-TOTAL_RULES=576
+NUM_SEEDS=2000
 SEED=42
+L=4
+M=2
 
-# Construct shared arguments
-SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --mixture-type $MIXTURE_TYPE --total-rules $TOTAL_RULES --seed $SEED"
+# Construct shared arguments (updated to match new argument structure)
+SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --L $L --M $M --num-seeds $NUM_SEEDS --seed $SEED"
 
 # Optional pipeline controls
 PIPELINE_ARGS="--verbose"
-
-# Experiment names for reference
-DATASET_NAME="${DATASET_TYPE}_${MIXTURE_TYPE}_${TOTAL_RULES}_${SEED}"
-MODEL_NAME="${DATASET_NAME}_${MODEL_TYPE}"
-
-echo "=========================================="
-echo "TRAINING RHM MODEL"
-echo "=========================================="
-echo "Dataset: $DATASET_NAME"
-echo "Model: $MODEL_NAME"
-echo "GPU allocation: $SLURM_GPUS_ON_NODE"
-echo "Memory: $SLURM_MEM_PER_NODE MB"
-echo "=========================================="
 
 # Step 1: Validate configuration (optional)
 echo "Step 1: Validating training configuration..."
 python $SCRIPT_ROOT/train.py $SHARED_ARGS --dry-run
 
-if [ $? -ne 0 ]; then
-    echo "Configuration validation failed!"
-    exit 1
-fi
 
 # Step 2: Train model
 echo "Step 2: Training model..."
 python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS
-
-if [ $? -eq 0 ]; then
-    echo "Training completed successfully!"
-    echo "Model saved to: exp/${DATASET_NAME}/${MODEL_TYPE}/"
-else
-    echo "Training failed!"
-    exit 1
-fi

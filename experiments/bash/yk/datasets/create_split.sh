@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH -J RHM_uniform
-#SBATCH -p gpu_4l
+#SBATCH -p gpu_l40
 #SBATCH -N 1
 #SBATCH -o RHM_%j.out
 #SBATCH -e RHM_%j.err
 #SBATCH --no-requeue
 #SBATCH -A qi_g1
-#SBATCH --qos=qig4c
+#SBATCH --qos=qil40
 #SBATCH --gres=gpu:2
 #SBATCH --overcommit
 #SBATCH --mincpus=9
@@ -62,14 +62,15 @@ fi
 
 # Primary experiment parameters
 DATASET_TYPE="uniform"      # Options: uniform, zipf
-RNG_SEED=42                # Seed for generating random seeds (for reproducibility)
-NUM_SEEDS=10                # Number of random seeds to generate
-
+RNG_SEED=42                # Seed for generating random seeds (for reproducibility)              # Number of random seeds to generate
+NUM_SEEDS=2000                # Number of random seeds to generate
+L=3
+M=3
 # Pipeline control flags
 PIPELINE_ARGS="--verbose --overwrite"  # Options: --verbose, --overwrite, --resume
 
 # Construct command arguments
-SHARED_ARGS="--dataset-type $DATASET_TYPE --seed $RNG_SEED --num-seeds $NUM_SEEDS"
+SHARED_ARGS="--dataset-type $DATASET_TYPE --seed $RNG_SEED --num-seeds $NUM_SEEDS --L $L --M $M"
 
 # =============================================================================
 # GENERATION STEPS

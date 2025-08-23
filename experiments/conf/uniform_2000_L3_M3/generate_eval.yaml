@@ -1,0 +1,53 @@
+# Complete train_dataset.yaml configuration file
+# Place in: conf/RHM_5_L2_M2/train_dataset.yaml
+# This includes raw generation, splitting, and ICL evaluation config
+
+eval_config:
+  # Global settings
+  base_seed: 42                      # Base seed for evaluation generation
+  create_combined_dataset: true      # Create unified dataset with all types
+  save_intermediate: true            # Save intermediate files during generation
+
+  # ICL sequence construction parameters
+  icl_params:
+    context_sizes: [10, 20, 30, 40, 56]   # Number of in-context examples to test
+    sequences_per_context_size: 100  # ICL sequences to generate per context size
+    max_sequence_length: null        # Optional: limit sequence length
+    min_sequence_length: null        # Optional: minimum sequence length
+
+  # Type 1: In-Distribution Memorization
+  # Uses sequences that appeared in training data
+  memorization:
+    enable: true                     # Enable memorization evaluation
+    sampling_ratio: 0.5              # Sample 50% of training sequences
+    ensure_coverage: true            # Ensure all training seeds represented
+    min_sequences_per_seed: 10       # Minimum sequences per seed
+
+  # Type 2: In-Distribution Generalization
+  # Uses validation split (same seeds, different sequences)
+  id_generalization:
+    enable: true                     # Enable ID generalization evaluation
+    use_validation_split: true       # Use validation split sequences
+    sampling_ratio: 1.0              # Use all validation sequences (100%)
+    min_sequences_per_seed: 10       # Minimum sequences per seed
+
+  # Type 3: Out-of-Distribution Same Rule
+  # Uses completely different seeds but same (L,m) configuration
+  ood_same_rule:
+    enable: true                     # Enable OOD same rule evaluation
+    num_ood_seeds: 3                 # Number of new seeds to generate
+    ood_seed_offset: 10000         # Seed offset to avoid training seeds
+    sequences_per_seed: 200          # Sequences to generate per new seed
+    min_sequences_per_seed: 50       # Minimum sequences per seed
+
+  # Type 4: Out-of-Distribution Transfer
+  # Uses different seeds AND different (L,m) configurations
+  ood_transfer:
+    enable: true                     # Enable OOD transfer evaluation
+    transfer_types: ["depth", "synonym"]  # Types: "depth", "synonym", "full"
+    max_transfer_distance: 2         # Maximum increase in L or m
+    num_transfer_seeds: 2            # Seeds per transfer configuration
+    sequences_per_seed: 200          # Sequences per seed
+    min_sequences_per_seed: 50       # Minimum sequences per seed
+    transfer_seed_offset: 200000     # Seed offset for transfer seeds
+
