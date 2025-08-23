@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=generate
+#SBATCH --job-name=gen_500_L3_M3
 #SBATCH --export=ALL
 #SBATCH --partition=cpu
 #SBATCH --mem=80G
 #SBATCH --cpus-per-task=8
-#SBATCH --time=48:00:00
-#SBATCH --output=/scratch2/jliu/ICL/logs/datasets/uniform.log
+#SBATCH --time=8:00:00
+#SBATCH --output=/scratch2/jliu/ICL/logs/datasets/uniform_500_L3_M3.log
 
 SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/datasets"
 

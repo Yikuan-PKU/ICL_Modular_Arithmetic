@@ -1,0 +1,29 @@
+# Collection configuration
+# Contains both experiment design and execution parameters
+# NOTE: L and M values come from bash script CLI arguments, not from this YAML file
+
+# Base configuration - evaluation types available for this dataset
+base_config:
+  # Evaluation types to process (discovered from datasets/.../eval/)
+  evaluation_types:
+    - "memorization"
+    - "id_generalization" 
+    - "ood_same_rule"
+    - "ood_transfer"
+
+# Collection-specific parameters
+collection_config:
+  # Evaluation design parameters
+  evaluation_parameters:
+    context_sizes: [1, 2, 3, 4, 5]
+    control_types: 
+      - "normal"
+      - "shuffled_context" 
+      - "random_context"
+  
+  # Execution parameters (can be overridden by command line)
+  execution_parameters:
+    batch_size: 32
+    max_sequences_per_condition: 200
+    capture_attention: true
+    # device is auto-detected, but can be overridden via --device
