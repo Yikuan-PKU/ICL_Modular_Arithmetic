@@ -14,7 +14,7 @@ distribution:
 
 # Configuration-specific metadata
 metadata:
-  description: "L=4, m=2 configuration for ICL experiments"
+  description: "L=3, m=3 configuration for ICL experiments"
   experiment_notes: "Deep hierarchy (L=4) with moderate multiplicity (m=2)"                     # Multiplicity
   complexity: "high"        # Subjective complexity assessment
 

@@ -36,7 +36,7 @@ collection_config:
   execution_parameters:
     device: gpu
     batch_size: 32
-    max_sequences_per_condition: 10
+    max_sequences_per_condition: 200
     save_intermediate: true
     intermediate_save_frequency: 5
   
