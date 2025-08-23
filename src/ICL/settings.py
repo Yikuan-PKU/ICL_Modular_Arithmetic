@@ -28,6 +28,9 @@ class _MyPathSettings:
             hostname = _socket.gethostname()
             if hostname in self.COML_SERVERS:
                 self.DATA_DIR = _Path("/scratch2/jliu/ICL")
+            elif hostname == "jean-zay":
+                # Default for your MacBook (adjust if you want another location)
+                self.DATA_DIR = _Path("/linkhome/rech/genscp01/uye44va/workspace/ICL")
             elif hostname == "mbp-de-jliu.home":
                 # Default for your MacBook (adjust if you want another location)
                 self.DATA_DIR = _Path.home() / "local_data"
