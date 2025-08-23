@@ -1,9 +1,8 @@
-# Collection configuration 
-# Only contains collection-specific parameters
+# Collection configuration
+# Contains both experiment design and execution parameters
 # NOTE: L and M values come from bash script CLI arguments, not from this YAML file
 
-# Base configuration - minimal
-task_name: "clm"
+# Base configuration - evaluation types available for this dataset
 base_config:
   # Evaluation types to process (discovered from datasets/.../eval/)
   evaluation_types:
@@ -12,12 +11,9 @@ base_config:
     - "ood_same_rule"
     - "ood_transfer"
 
-# Collection-specific parameters (not in model configs)
+# Collection-specific parameters
 collection_config:
-  # Memory management - control attention data collection
-  capture_attention: true
-  
-  # Evaluation parameters
+  # Evaluation design parameters
   evaluation_parameters:
     context_sizes: [1, 2, 3, 4, 5]
     control_types: 
@@ -25,21 +21,9 @@ collection_config:
       - "shuffled_context" 
       - "random_context"
   
-  # Execution parameters
+  # Execution parameters (can be overridden by command line)
   execution_parameters:
-    device: cuda
     batch_size: 32
-    max_sequences_per_condition: 10
-    save_intermediate: true
-    intermediate_save_frequency: 5
-  
-  # Memory management
-  memory_management:
-    clear_cache_frequency: 10
-    max_memory_usage_gb: 12.0
-  
-  # Error handling
-  error_handling:
-    max_model_failures: 5
-    retry_failed_models: true
-    failure_retry_delay: 0
+    max_sequences_per_condition: 200
+    capture_attention: true
+    # device is auto-detected, but can be overridden via --device

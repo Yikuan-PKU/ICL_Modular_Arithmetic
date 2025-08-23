@@ -3,7 +3,30 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import torch
+
 from ICL.settings import PATH
+
+
+def detect_best_device() -> str:
+    """Automatically detect the best available device."""
+    if torch.cuda.is_available():
+        # Check if CUDA is actually usable
+        try:
+            torch.cuda.current_device()
+            device_name = torch.cuda.get_device_name(0)
+            print(f"CUDA GPU detected: {device_name}")
+            return "cuda"
+        except Exception as e:
+            print(f"CUDA available but not usable: {e}")
+
+    # Check for MPS (Apple Silicon)
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        print("MPS (Apple Silicon GPU) detected")
+        return "mps"
+
+    print("Using CPU (no GPU detected)")
+    return "cpu"
 
 
 @dataclass
@@ -23,8 +46,8 @@ class CollectionConfig:
     eval_type: str | None = None
     batch_mode: bool = False
 
-    # Simple execution parameters
-    device: str = "cuda"
+    # Simple execution parameters - device auto-detected
+    device: str = None  # Will be auto-detected in __post_init__
     batch_size: int = 32
     max_sequences_per_condition: int = 200
     capture_attention: bool = True
@@ -37,8 +60,12 @@ class CollectionConfig:
     output_dir: Path | None = None
 
     def __post_init__(self):
-        """Simple initialization."""
-        # Set defaults
+        """Simple initialization with auto device detection."""
+        # Auto-detect device if not specified
+        if self.device is None:
+            self.device = detect_best_device()
+
+        # Set defaults first
         if self.context_sizes is None:
             self.context_sizes = [1, 2, 3, 4, 5]
         if self.control_types is None:
@@ -50,6 +77,47 @@ class CollectionConfig:
 
         # Set up paths
         self._setup_paths()
+
+        # Load execution parameters from YAML (after paths are set up)
+        self._load_execution_parameters_from_yaml()
+
+    def _load_execution_parameters_from_yaml(self):
+        """Load execution parameters from YAML file."""
+        try:
+            import yaml
+
+            shared_id = f"{self.dataset_type}_{self.num_seeds}_L{self.config_L}_M{self.config_m}"
+            config_path = PATH.conf_dir / shared_id / "collection.yaml"
+
+            if config_path.exists():
+                with open(config_path) as f:
+                    config_data = yaml.safe_load(f) or {}
+
+                # Load collection config
+                collection_config = config_data.get("collection_config", {})
+
+                # Load evaluation parameters
+                eval_params = collection_config.get("evaluation_parameters", {})
+                if "context_sizes" in eval_params:
+                    self.context_sizes = eval_params["context_sizes"]
+                if "control_types" in eval_params:
+                    self.control_types = eval_params["control_types"]
+
+                # Load execution parameters (only if not explicitly set)
+                exec_params = collection_config.get("execution_parameters", {})
+                if "batch_size" in exec_params and self.batch_size == 32:  # Only override default
+                    self.batch_size = exec_params["batch_size"]
+                if "max_sequences_per_condition" in exec_params and self.max_sequences_per_condition == 200:
+                    self.max_sequences_per_condition = exec_params["max_sequences_per_condition"]
+                if "capture_attention" in exec_params and self.capture_attention == True:
+                    self.capture_attention = exec_params["capture_attention"]
+
+                print(f"Loaded execution parameters from {config_path}")
+            else:
+                print(f"No collection.yaml found at {config_path}, using defaults")
+
+        except Exception as e:
+            print(f"Warning: Failed to load YAML config: {e}, using defaults")
 
     def _setup_paths(self):
         """Simple path setup."""
@@ -183,7 +251,9 @@ def create_collection_parser():
     parser.add_argument("--eval-type", choices=["memorization", "id_generalization", "ood_same_rule", "ood_transfer"])
 
     # Execution parameters
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--device", choices=["cuda", "cpu", "mps"], help="Device to use (auto-detected if not specified)"
+    )
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--max-sequences", type=int)
     parser.add_argument("--no-attention", action="store_true")
@@ -208,7 +278,7 @@ def create_collection_config_from_args(args) -> CollectionConfig:
         model_type=args.model_type,
         model_variant=getattr(args, "model_variant", None),
         eval_type=getattr(args, "eval_type", None),
-        device=getattr(args, "device", "cuda"),
+        device=getattr(args, "device", None),  # None triggers auto-detection
         batch_mode=getattr(args, "batch_mode", False),
     )
 

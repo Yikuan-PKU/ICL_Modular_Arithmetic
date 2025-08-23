@@ -35,7 +35,7 @@ class CheckpointManager:
                 checkpoint_step = self._extract_checkpoint_step(checkpoint_path)
                 model_id = f"{self.config.model_variant}_step{checkpoint_step}"
 
-                # Simple metadata dict
+                # Simple metadata dict - use model_type from bash script, not YAML
                 metadata = {
                     "model_variant": self.config.model_variant,
                     "checkpoint_step": checkpoint_step,
@@ -43,6 +43,7 @@ class CheckpointManager:
                     "model_id": model_id,
                     "config_L": self.config.config_L,
                     "config_m": self.config.config_m,
+                    "task_name": self.config.model_type,  # Use explicit model_type from bash
                 }
                 all_metadata.append(metadata)
             except Exception as e:
