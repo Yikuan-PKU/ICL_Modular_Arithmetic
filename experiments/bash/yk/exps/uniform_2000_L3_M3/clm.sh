@@ -25,7 +25,9 @@ M=3
 # Construct shared arguments (updated to match new argument structure)
 SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED --L $L --M $M"
 # Optional pipeline controls
-PIPELINE_ARGS="--verbose"
+MODE_ARGS="--batch-mode --verbose --overwrite"
+
+ALL_ARGS="$SHARED_ARGS $MODE_ARGS"
 
 # =============================================================================
 # Training model
@@ -38,8 +40,7 @@ python $SCRIPT_ROOT/train.py $SHARED_ARGS --dry-run
 
 # Step 2: Train model
 echo "Step 2: Training model..."
-python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS
-
+python $SCRIPT_ROOT/train.py $ALL_ARGS
 
 # =============================================================================
 # Evaluating model

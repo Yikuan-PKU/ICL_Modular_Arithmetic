@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH -J train_clm
-#SBATCH -p gpu_l40
+#SBATCH -J eval_clm
+#SBATCH -p gpu_4l
 #SBATCH -N 1
 #SBATCH -o RHM_%j.out
 #SBATCH -e RHM_%j.err
 #SBATCH --no-requeue
 #SBATCH -A qi_g1
-#SBATCH --qos=qil40
+#SBATCH --qos=qig4c
 #SBATCH --gres=gpu:1
 #SBATCH --overcommit
 #SBATCH --mincpus=9
@@ -25,9 +25,9 @@ M=3
 # Construct shared arguments (updated to match new argument structure)
 SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED --L $L --M $M"
 # Optional pipeline controls
-PIPELINE_ARGS="--verbose"
+MODE_ARGS="--batch-mode --verbose --overwrite"
 
-
+ALL_ARGS="$SHARED_ARGS $MODE_ARGS"
 
 # =============================================================================
 # Evaluating model

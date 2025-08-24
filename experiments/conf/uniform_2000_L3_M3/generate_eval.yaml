@@ -49,5 +49,5 @@ eval_config:
     num_transfer_seeds: 2            # Seeds per transfer configuration
     sequences_per_seed: 200          # Sequences per seed
     min_sequences_per_seed: 50       # Minimum sequences per seed
-    transfer_seed_offset: 200000     # Seed offset for transfer seeds
+    transfer_seed_offset: 2000     # Seed offset for transfer seeds
 
