@@ -1,13 +1,16 @@
-import pickle
 import random
 import typing as t
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import torch
+import yaml
 from datasets import Dataset
 
+T = t.TypeVar("T")
+ConfigTuple = tuple[int, int]  # (L, m)
 #############################################
 # RHM-related util func
 #############################################
@@ -78,47 +81,49 @@ def base2dec(t, b):
 #############################################
 
 
-T = t.TypeVar("T")
-ConfigTuple = tuple[int, int]  # (L, m)
+def generate_zipf_distribution(n: int, alpha: float = 1.0) -> list[float]:
+    """Generate normalized Zipf distribution with n elements."""
+    if n <= 0:
+        raise ValueError("Number of elements must be positive")
+
+    # Generate Zipf probabilities: 1/k^alpha for k=1,2,...,n
+    ranks = np.arange(1, n + 1)
+    raw_probs = 1.0 / (ranks**alpha)
+
+    # Normalize to sum to 1
+    normalized_probs = raw_probs / raw_probs.sum()
+
+    return normalized_probs.tolist()
 
 
-@dataclass
-class TrainingMetadata:
-    """Container for training dataset metadata."""
+def load_yaml_config(config_path: Path) -> dict[str, Any]:
+    """Load YAML configuration file."""
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-    config_list: list[ConfigTuple]
-    used_seeds: dict[ConfigTuple, list[int]]
-    rules: dict[int, dict]
-    generation_params: dict
-    config_stats: dict
+    with config_path.open("r") as f:
+        return yaml.safe_load(f)
 
 
-def load_training_metadata(metadata_path: Path | str) -> TrainingMetadata:
-    """Load and parse training dataset metadata."""
-    metadata_path = Path(metadata_path)
+def create_rule_probabilities(
+    rules: dict[int, torch.Tensor], distribution_type: str, **params
+) -> dict[int, torch.Tensor] | None:
+    """Create rule sampling probabilities for RHM based on distribution type."""
+    if distribution_type == "uniform":
+        return None  # RHM uses uniform probabilities by default
 
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Training metadata not found: {metadata_path}")
+    if distribution_type == "zipf":
+        alpha = params.get("zipf_alpha", 1.0)
+        probability = {}
 
-    with open(metadata_path, "rb") as f:
-        metadata = pickle.load(f)
+        for level, rule_tensor in rules.items():
+            m = rule_tensor.shape[1]  # Number of synonymic rules at this level
+            zipf_probs = generate_zipf_distribution(m, alpha)
+            probability[level] = torch.tensor(zipf_probs, dtype=torch.float32)
 
-    # Parse metadata into structured format
-    config_list = [(cfg["L"], cfg["m"]) for cfg in metadata["configurations"]]
+        return probability
 
-    # Extract used seeds per configuration
-    used_seeds = defaultdict(list)
-    for task_id, cfg in enumerate(metadata["configurations"]):
-        config = (cfg["L"], cfg["m"])
-        used_seeds[config].append(task_id)  # task_id was used as seed_rules
-
-    return TrainingMetadata(
-        config_list=config_list,
-        used_seeds=dict(used_seeds),
-        rules=metadata.get("rules", {}),
-        generation_params=metadata.get("generation_params", {}),
-        config_stats=metadata.get("config_stats", {}),
-    )
+    raise ValueError(f"Unsupported distribution type: {distribution_type}")
 
 
 #############################################
