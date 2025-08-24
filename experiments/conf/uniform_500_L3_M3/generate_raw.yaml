@@ -1,5 +1,5 @@
-# conf/uniform_1_L4_M2/train_dataset.yaml
 # Configuration for L=4, m=2 with uniform distribution
+# Compatible with existing RHM generation pipeline
 
 rhm_params:
   vocab_size: 32
@@ -12,14 +12,20 @@ distribution:
   type: "uniform"     # Options: "uniform", "zipf"
   zipf_alpha: 1.0     # Only used if type is "zipf"
 
+# Global deduplication configuration
+deduplication:
+  enabled: true  # Set to false to use original generation method
+  max_attempts: 15  # Maximum attempts to generate unique sequences per seed
+  batch_multiplier: 2.5  # Multiplier for initial batch size (higher = fewer attempts needed)
+
 # Configuration-specific metadata
 metadata:
-  description: "L=3, m=3 configuration for ICL experiments"
-  experiment_notes: "Deep hierarchy (L=4) with moderate multiplicity (m=3)"                     # Multiplicity
-  complexity: "high"        # Subjective complexity assessment
+  description: "L=4, m=2 configuration for ICL experiments"
+  experiment_notes: "Deep hierarchy (L=4) with low multiplicity (m=2)"
+  complexity: "high"
 
 # Validation parameters (optional)
 validation:
-  min_sequence_length: 8    # Expected longer sequences for L=4
-  max_sequence_length: 200
+  min_sequence_length: 16   # Expected: tuple_size^L = 2^4 = 16
+  max_sequence_length: 16   # Should be exactly 16 for this configuration
   vocab_check: true

@@ -2,36 +2,68 @@
 
 import logging
 
+import torch
+
+from ICL.eval.collection.data_schema import extract_dataset_metadata, validate_eval_dataset
 from ICL.eval.collection.evaluator import CollectionEvaluator
 
 logger = logging.getLogger(__name__)
 
 
 class CollectionCoordinator:
-    """Simplified collection coordinator."""
+    """Simplified collection coordinator with validation."""
 
     def __init__(self, config):
         """Simple initialization."""
         self.config = config
 
     def validate_setup(self) -> bool:
-        """Basic setup validation."""
+        """Enhanced setup validation with eval_type checking."""
         try:
             if self.config.batch_mode:
                 combinations = self.config.discover_combinations()
                 if not combinations:
                     logger.error("No valid combinations found")
                     return False
-                logger.info(f"Found {len(combinations)} combinations")
+
+                logger.info(f"Found {len(combinations)} valid combinations")
+
+                # Validate each combination's eval dataset
+                shared_id = f"{self.config.dataset_type}_{self.config.num_seeds}_L{self.config.config_L}_M{self.config.config_m}"
+                eval_base = self.config.eval_dataset_path.parent.parent if self.config.eval_dataset_path else None
+
+                if not eval_base:
+                    eval_base = self.config.model_base_dir.parent / "datasets" / shared_id / "eval"
+
+                for variant, eval_type in combinations:
+                    eval_path = eval_base / eval_type / "dataset"
+                    if not validate_eval_dataset(eval_path, eval_type):
+                        logger.warning(f"Eval dataset validation failed for {variant}/{eval_type}")
+
             else:
-                # Basic path checks
+                # Single mode validation
                 if not self.config.eval_dataset_path.exists():
                     logger.error(f"Dataset not found: {self.config.eval_dataset_path}")
                     return False
                 if not self.config.model_base_dir.exists():
                     logger.error(f"Model dir not found: {self.config.model_base_dir}")
                     return False
+
+                # Validate eval_type consistency
+                if not validate_eval_dataset(self.config.eval_dataset_path, self.config.eval_type):
+                    logger.error(f"Eval dataset does not match eval_type {self.config.eval_type}")
+                    return False
+
+                # Log dataset metadata
+                metadata = extract_dataset_metadata(self.config.eval_dataset_path)
+                logger.info(
+                    f"Dataset: {metadata['num_examples']} examples, hint: {metadata.get('eval_type_hint', 'unknown')}"
+                )
+
                 logger.info(f"Single mode: {self.config.model_variant}/{self.config.eval_type}")
+
+            # Log memory management settings
+            self._log_memory_settings()
 
             return True
 
@@ -39,23 +71,47 @@ class CollectionCoordinator:
             logger.error(f"Setup validation failed: {e}")
             return False
 
+    def _log_memory_settings(self):
+        """Log current memory management configuration."""
+        logger.info("Memory management settings:")
+        logger.info(f"  Device: {self.config.device}")
+        logger.info(f"  Batch size: {self.config.batch_size}")
+        logger.info(f"  Sequence chunk size: {self.config.sequence_chunk_size}")
+        logger.info(f"  Model offloading: {self.config.offload_models}")
+        logger.info(f"  Attention capture: {self.config.capture_attention}")
+        if self.config.capture_attention:
+            logger.info(f"  Selective attention: {self.config.selective_attention}")
+            logger.info(f"  Attention sampling rate: {self.config.attention_sampling_rate}")
+
     def list_available_combinations(self) -> dict:
-        """Simple combination listing."""
+        """Simple combination listing with validation info."""
         combinations = self.config.discover_combinations()
+
+        # Add validation info
+        shared_id = (
+            f"{self.config.dataset_type}_{self.config.num_seeds}_L{self.config.config_L}_M{self.config.config_m}"
+        )
+        eval_base = self.config.model_base_dir.parent / "datasets" / shared_id / "eval"
+
+        validated_combinations = []
+        for variant, eval_type in combinations:
+            eval_path = eval_base / eval_type / "dataset"
+            is_valid = validate_eval_dataset(eval_path, eval_type)
+            validated_combinations.append({"model_variant": variant, "eval_type": eval_type, "dataset_valid": is_valid})
 
         return {
             "total_combinations": len(combinations),
-            "combinations": [{"model_variant": variant, "eval_type": eval_type} for variant, eval_type in combinations],
+            "combinations": validated_combinations,
         }
 
     def run_collection_pipeline(self) -> dict:
-        """Simple collection pipeline."""
+        """Simple collection pipeline with memory monitoring."""
         if self.config.batch_mode:
             return self._run_batch_collection()
         return self._run_single_collection()
 
     def _run_batch_collection(self) -> dict:
-        """Simple batch collection."""
+        """Batch collection with memory monitoring."""
         logger.info("Starting batch collection")
 
         combinations = self.config.discover_combinations()
@@ -67,6 +123,11 @@ class CollectionCoordinator:
 
         for variant, eval_type in combinations:
             logger.info(f"Processing {variant}/{eval_type}")
+
+            # Log memory usage if CUDA available
+            if torch.cuda.is_available():
+                memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+                logger.info(f"GPU memory before evaluation: {memory_allocated:.2f} GB")
 
             try:
                 # Create single config
@@ -82,6 +143,10 @@ class CollectionCoordinator:
             except Exception as e:
                 logger.error(f"✗ Failed {variant}/{eval_type}: {e}")
                 batch_results["failed"].append((variant, eval_type, str(e)))
+
+                # Force cleanup on failure
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 continue
 
         logger.info(f"Batch completed: {len(batch_results['completed'])}/{len(combinations)} successful")

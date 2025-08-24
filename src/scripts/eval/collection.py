@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Simplified collection script maintaining same interface and outputs."""
+"""Simplified collection script with memory management options."""
 
 import logging
-import sys
-from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from ICL.eval.collection.collection_config import create_collection_config_from_args, create_collection_parser
 from ICL.eval.collection.coordinator import CollectionCoordinator
@@ -16,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """Main entry point with same interface as original."""
+    """Main entry point with memory management options."""
     parser = create_collection_parser()
     args = parser.parse_args()
 
@@ -44,7 +38,7 @@ def main():
 
         results = coordinator.run_collection_pipeline()
 
-        # Print same style output as original
+        # Print results with memory info
         print_collection_results(config, results)
         return 0
 
@@ -55,7 +49,7 @@ def main():
 
 
 def handle_list_combinations(args):
-    """Handle --list-combinations command."""
+    """Handle --list-combinations command with validation info."""
     try:
         # Create minimal config for discovery
         config = create_collection_config_from_args(args)
@@ -70,7 +64,8 @@ def handle_list_combinations(args):
         print("\nCombinations:")
 
         for combo in combinations_info["combinations"]:
-            print(f"  - {combo['model_variant']} / {combo['eval_type']}")
+            status = "✓" if combo["dataset_valid"] else "✗"
+            print(f"  {status} {combo['model_variant']} / {combo['eval_type']}")
 
         return 0
 
@@ -94,6 +89,13 @@ def handle_validate_only(args):
         else:
             print(f"  Mode: Single ({config.model_variant} / {config.eval_type})")
 
+        # Show memory settings
+        print("\nMemory management:")
+        print(f"  Device: {config.device}")
+        print(f"  Sequence chunk size: {config.sequence_chunk_size}")
+        print(f"  Model offloading: {config.offload_models}")
+        print(f"  Attention sampling: {config.attention_sampling_rate}")
+
         if coordinator.validate_setup():
             print("✓ Configuration is valid")
             return 0
@@ -106,7 +108,7 @@ def handle_validate_only(args):
 
 
 def print_collection_results(config, results):
-    """Print results in same format as original script."""
+    """Print results with memory management info."""
     print("\nCollection completed successfully!")
     print(f"Dataset: {config.dataset_type}_{config.num_seeds}_L{config.config_L}_M{config.config_m}")
 
@@ -124,8 +126,18 @@ def print_collection_results(config, results):
         print(f"Evaluation type: {config.eval_type}")
         print(f"Total evaluations: {results.get('total_evaluations', 0)}")
 
-        if config.capture_attention:
-            print(f"Attention records: {results.get('total_attention_records', 0)}")
+    # Memory management info
+    print("\nMemory management:")
+    print(f"  Sequence chunk size: {config.sequence_chunk_size}")
+    print(f"  Model offloading: {config.offload_models}")
+
+    if config.capture_attention:
+        print("  Attention streaming: enabled")
+        print(f"  Attention sampling rate: {config.attention_sampling_rate}")
+        if config.selective_attention != "all":
+            print(f"  Selective attention: {config.selective_attention}")
+    else:
+        print("  Attention capture: disabled")
 
     print(f"Results saved to: {config.output_dir}")
 

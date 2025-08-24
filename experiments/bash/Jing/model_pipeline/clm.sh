@@ -42,6 +42,7 @@ python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS
 # =============================================================================
 echo "============== Evaluating model =============="
 
+ALL_ARGS="$SHARED_ARGS $MODE_ARGS"
 SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/eval"
 # Step 1: Discover available combinations using explicit L,M,MODEL_TYPE
 echo "Step 1: Discovering combinations using explicit L=$L, M=$M, MODEL_TYPE=$MODEL_TYPE..."

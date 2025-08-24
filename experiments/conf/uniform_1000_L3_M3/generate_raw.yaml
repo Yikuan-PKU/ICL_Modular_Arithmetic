@@ -1,0 +1,25 @@
+# conf/uniform_1_L4_M2/train_dataset.yaml
+# Configuration for L=4, m=2 with uniform distribution
+
+rhm_params:
+  vocab_size: 32
+  num_classes: 2
+  tuple_size: 2
+  samples_per_config: 4000  # Number of samples per seed for this (L,M) configuration
+
+# Distribution type for rule sampling
+distribution:
+  type: "uniform"     # Options: "uniform", "zipf"
+  zipf_alpha: 1.0     # Only used if type is "zipf"
+
+# Configuration-specific metadata
+metadata:
+  description: "L=3, m=3 configuration for ICL experiments"
+  experiment_notes: "Deep hierarchy (L=4) with moderate multiplicity (m=3)"                     # Multiplicity
+  complexity: "high"        # Subjective complexity assessment
+
+# Validation parameters (optional).     TODO: delete
+# validation:
+#   min_sequence_length: 8    # Expected longer sequences for L=4
+#   max_sequence_length: 200
+#   vocab_check: true

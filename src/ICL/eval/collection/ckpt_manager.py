@@ -1,4 +1,4 @@
-"""Checkpoint management with explicit L,M values - no auto-discovery."""
+"""Checkpoint management with memory management."""
 
 import logging
 from pathlib import Path
@@ -13,12 +13,13 @@ logger = logging.getLogger(__name__)
 
 
 class CheckpointManager:
-    """Simplified checkpoint manager."""
+    """Simplified checkpoint manager with memory management."""
 
     def __init__(self, config):
         """Simplified initialization."""
         self.config = config
         self.device = torch.device(config.device)
+        self.cpu_device = torch.device("cpu")
 
     def discover_checkpoints(self) -> list[dict]:
         """Simplified checkpoint discovery - returns simple dicts."""
@@ -141,8 +142,12 @@ class CheckpointManager:
         return 0
 
     def load_model_checkpoint(self, metadata: dict):
-        """Simplified model loading."""
+        """Load model checkpoint with memory management."""
         logger.info(f"Loading checkpoint: {metadata['model_id']}")
+
+        # Clear GPU cache before loading
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Load tokenizer
         tokenizer = RHMTokenizer.from_pretrained(metadata["checkpoint_path"], trust_remote_code=True)
@@ -176,3 +181,28 @@ class CheckpointManager:
             model.resize_token_embeddings(len(tokenizer))
 
         return model, tokenizer
+
+    def offload_model_to_cpu(self, model) -> None:
+        """Move model to CPU to free GPU memory."""
+        if self.config.offload_models and model is not None:
+            model.cpu()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            logger.info("Model offloaded to CPU")
+
+    def reload_model_to_device(self, model):
+        """Move model back to target device."""
+        if self.config.offload_models and model is not None:
+            model.to(self.device)
+            logger.info(f"Model reloaded to {self.device}")
+
+    def cleanup_model(self, model, tokenizer) -> None:
+        """Comprehensive model cleanup."""
+        if model is not None:
+            del model
+        if tokenizer is not None:
+            del tokenizer
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.info("Model cleanup completed")

@@ -34,14 +34,9 @@ seed_balanced_batching: true
 seed_sampling_strategy: "balanced"  # "balanced", "random", "weighted"
 seeds_per_batch: null  # null = use all available seeds
 
-# NEW: Last-token prediction (shared)
-last_token_prediction: false  # Enable last-token prediction masking
-
-# UPDATED: Checkpointing and evaluation with steps option
-save_by_steps: false  # If true, save by steps instead of epochs
-save_steps_interval: 500  # Steps interval when save_by_steps=true
-save_strategy: "epoch"  # Will be overridden based on save_by_steps
-save_steps: 1  # Will be overridden based on save_by_steps
+# Checkpointing and evaluation (shared)
+save_strategy: "epoch"
+save_steps: 1  # Save every epoch
 save_total_limit: 100
 load_best_model_at_end: true
 metric_for_best_model: "eval_loss"
@@ -81,10 +76,8 @@ task_specific:
   clm:
     task_name: "clm"
     mlm: false  # CLM doesn't use masking
-    last_token_prediction: true  # Often useful for CLM
     
   mlm:
     task_name: "mlm"
     mlm: true   # MLM uses masking
     mlm_probability: 0.15  # Standard MLM masking probability
-    last_token_prediction: false  # Usually not needed for MLM

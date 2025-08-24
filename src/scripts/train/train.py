@@ -39,7 +39,114 @@ def create_training_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Validate configuration without starting training"
     )
 
+    training_group.add_argument(
+        "--save-by-steps", action="store_true", help="Save checkpoints by steps instead of epochs"
+    )
+    training_group.add_argument(
+        "--save-steps-interval",
+        type=int,
+        default=500,
+        help="Steps interval for saving when --save-by-steps is enabled (default: 500)",
+    )
+    training_group.add_argument(
+        "--last-token-prediction", action="store_true", help="Enable last-token prediction masking (useful for CLM)"
+    )
+    training_group.add_argument(
+        "--no-last-token-prediction", action="store_true", help="Explicitly disable last-token prediction masking"
+    )
+
     return parser
+
+
+def create_training_config(
+    model_config: ModelConfig, config_override_path: str | None = None, args: argparse.Namespace | None = None
+) -> RHMTrainingConfig:
+    """Create training configuration from flattened configs and overrides."""
+    # Start with defaults
+    config = RHMTrainingConfig()
+    logger.info("Starting with default RHMTrainingConfig")
+
+    # Load model-specific config from flattened structure
+    model_yaml = load_model_yaml_config(model_config)
+
+    # Load override config if provided
+    override_yaml = load_yaml_overrides(config_override_path)
+
+    # Merge configurations: defaults < model_yaml < override_yaml < command_line_args
+    all_overrides = {}
+
+    # Apply model config
+    if model_yaml:
+        all_overrides.update(model_yaml)
+        logger.info(f"Applied {len(model_yaml)} model-specific parameters from {model_config.model_type}.yaml")
+
+    # Apply overrides
+    if override_yaml:
+        all_overrides.update(override_yaml)
+        logger.info(f"Applied {len(override_yaml)} override parameters")
+
+    # NEW: Apply command line argument overrides
+    if args:
+        cmd_overrides = {}
+
+        # Handle save by steps
+        if args.save_by_steps:
+            cmd_overrides["save_by_steps"] = True
+            cmd_overrides["save_steps_interval"] = args.save_steps_interval
+            logger.info(f"Command line override: save_by_steps=True, save_steps_interval={args.save_steps_interval}")
+
+        # Handle last token prediction
+        if args.last_token_prediction:
+            cmd_overrides["last_token_prediction"] = True
+            logger.info("Command line override: last_token_prediction=True")
+        elif args.no_last_token_prediction:
+            cmd_overrides["last_token_prediction"] = False
+            logger.info("Command line override: last_token_prediction=False")
+
+        if cmd_overrides:
+            all_overrides.update(cmd_overrides)
+            logger.info(f"Applied {len(cmd_overrides)} command line overrides")
+
+    # Set hierarchical paths (using train subdirectory)
+    paths = model_config.get_model_paths()
+    all_overrides["output_dir"] = str(paths["model_dir"])
+    all_overrides["dataset_path"] = str(paths["dataset_dir"])  # Points to train subdirectory
+
+    # Set model type and task name
+    all_overrides["task_name"] = model_config.model_type
+
+    # Apply all overrides with type conversion
+    if all_overrides:
+        config_dict = config.__dict__.copy()
+
+        for key, value in all_overrides.items():
+            if hasattr(config, key):
+                original_value = getattr(config, key)
+
+                try:
+                    if isinstance(original_value, bool):
+                        converted_value = str(value).lower() in ["true", "1", "yes", "on"]
+                    elif isinstance(original_value, int):
+                        converted_value = int(value)
+                    elif isinstance(original_value, float):
+                        converted_value = float(value)
+                    elif isinstance(original_value, list):
+                        converted_value = value if isinstance(value, list) else [value]
+                    else:
+                        converted_value = value
+
+                    config_dict[key] = converted_value
+                    logger.info(f"Config override: {key} = {converted_value}")
+
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to convert {key}={value}: {e}")
+                    config_dict[key] = value
+            else:
+                logger.warning(f"Unknown parameter: {key} (ignored)")
+
+        config = RHMTrainingConfig(**config_dict)
+
+    return config
 
 
 def load_model_yaml_config(model_config: ModelConfig) -> dict[str, t.Any]:
@@ -108,75 +215,8 @@ def load_yaml_overrides(config_path: str | Path | None) -> dict[str, t.Any]:
         return {}
 
 
-def create_training_config(model_config: ModelConfig, config_override_path: str | None = None) -> RHMTrainingConfig:
-    """Create training configuration from flattened configs and overrides."""
-    # Start with defaults
-    config = RHMTrainingConfig()
-    logger.info("Starting with default RHMTrainingConfig")
-
-    # Load model-specific config from flattened structure
-    model_yaml = load_model_yaml_config(model_config)
-
-    # Load override config if provided
-    override_yaml = load_yaml_overrides(config_override_path)
-
-    # Merge configurations: defaults < model_yaml < override_yaml
-    all_overrides = {}
-
-    # Apply model config
-    if model_yaml:
-        all_overrides.update(model_yaml)
-        logger.info(f"Applied {len(model_yaml)} model-specific parameters from {model_config.model_type}.yaml")
-
-    # Apply overrides
-    if override_yaml:
-        all_overrides.update(override_yaml)
-        logger.info(f"Applied {len(override_yaml)} override parameters")
-
-    # Set hierarchical paths (using train subdirectory)
-    paths = model_config.get_model_paths()
-    all_overrides["output_dir"] = str(paths["model_dir"])
-    all_overrides["dataset_path"] = str(paths["dataset_dir"])  # Points to train subdirectory
-
-    # Set model type and task name
-    all_overrides["task_name"] = model_config.model_type
-
-    # Apply all overrides with type conversion
-    if all_overrides:
-        config_dict = config.__dict__.copy()
-
-        for key, value in all_overrides.items():
-            if hasattr(config, key):
-                original_value = getattr(config, key)
-
-                try:
-                    if isinstance(original_value, bool):
-                        converted_value = str(value).lower() in ["true", "1", "yes", "on"]
-                    elif isinstance(original_value, int):
-                        converted_value = int(value)
-                    elif isinstance(original_value, float):
-                        converted_value = float(value)
-                    elif isinstance(original_value, list):
-                        converted_value = value if isinstance(value, list) else [value]
-                    else:
-                        converted_value = value
-
-                    config_dict[key] = converted_value
-                    logger.info(f"Config override: {key} = {converted_value}")
-
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Failed to convert {key}={value}: {e}")
-                    config_dict[key] = value
-            else:
-                logger.warning(f"Unknown parameter: {key} (ignored)")
-
-        config = RHMTrainingConfig(**config_dict)
-
-    return config
-
-
 def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.Any], model_config: ModelConfig) -> None:
-    """Save metadata.json file for evaluation pipeline compatibility."""
+    """Save metadata.json file for evaluation pipeline compatibility with new features."""
     metadata_file = output_dir / "metadata.json"
 
     train_meta = training_metadata.get("training_metadata", {})
@@ -199,6 +239,10 @@ def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.An
         "output_dir": str(output_dir),
         "shuffling_enabled": train_meta.get("shuffling_enabled", False),
         "shuffle_strategy": train_meta.get("shuffle_strategy"),
+        # NEW: Add new feature metadata
+        "last_token_prediction": train_meta.get("last_token_prediction", False),
+        "save_by_steps": train_meta.get("save_by_steps", False),
+        "accuracy_tracking_enabled": True,  # Always enabled now
         "hierarchical_paths": {
             "base_dataset_dir": str(paths["base_dataset_dir"]),
             "train_dataset_dir": str(paths["dataset_dir"]),
@@ -208,11 +252,29 @@ def save_evaluation_metadata(output_dir: Path, training_metadata: dict[str, t.An
         "tokenizer_metadata": training_metadata.get("tokenizer_metadata", {}),
         "model_metadata": training_metadata.get("model_metadata", {}),
         "dataset_generation_params": training_metadata.get("dataset_generation_params", {}),
+        # NEW: Add accuracy and training feature metadata
+        "training_features": {
+            "seed_balanced_batching": train_meta.get("seed_balanced_batching", True),
+            "seed_sampling_strategy": train_meta.get("seed_sampling_strategy", "balanced"),
+            "last_token_prediction": train_meta.get("last_token_prediction", False),
+            "accuracy_tracking": True,
+            "save_by_steps": train_meta.get("save_by_steps", False),
+            "cross_config_shuffling": train_meta.get("shuffle_before_packing", False),
+        },
     }
 
-    # with open(metadata_file, "w") as f:
-    # json.dump(eval_metadata, f, indent=2)
-    # logger.info(f"Saved evaluation metadata to: {metadata_file}")
+    import json
+
+    with open(metadata_file, "w") as f:
+        json.dump(eval_metadata, f, indent=2)
+    logger.info(f"Saved evaluation metadata (including new features) to: {metadata_file}")
+
+
+def safe_format_number(value, default="N/A"):
+    """Safely format a number with commas, handling non-numeric values."""
+    if isinstance(value, (int, float)) and value is not None:
+        return f"{value:,}"
+    return default
 
 
 def main():
@@ -232,8 +294,12 @@ def main():
     logger.info(f"Dataset configuration: {model_config.dataset_config.to_name()}")
     logger.info(f"Using L={model_config.dataset_config.L}, m={model_config.dataset_config.m} from command line")
 
-    # Create training configuration
-    training_config = create_training_config(model_config=model_config, config_override_path=args.config_override)
+    # Create training configuration with command line args
+    training_config = create_training_config(
+        model_config=model_config,
+        config_override_path=args.config_override,
+        args=args,  # Pass command line args for overrides
+    )
 
     # Set seed for reproducibility
     set_seed(training_config.seed)
@@ -243,6 +309,12 @@ def main():
         logger.info(f"Model config: {model_config.to_name()}")
         logger.info(f"Dataset config: {model_config.dataset_config.to_name()}")
         logger.info(f"Using L={model_config.dataset_config.L}, M={model_config.dataset_config.m}")
+
+        # Log new configuration options
+        logger.info(f"Save by steps: {training_config.save_by_steps}")
+        if training_config.save_by_steps:
+            logger.info(f"Save steps interval: {training_config.save_steps_interval}")
+        logger.info(f"Last token prediction: {training_config.last_token_prediction}")
 
         # Validate paths
         paths = model_config.get_model_paths()
@@ -274,7 +346,7 @@ def main():
         logger.error("Please run dataset generation first.")
         return 1
 
-    # Log final configuration
+    # Log final configuration including new features
     logger.info("=" * 60)
     logger.info("TRAINING CONFIGURATION")
     logger.info("=" * 60)
@@ -285,11 +357,21 @@ def main():
     logger.info(f"Task: {training_config.task_name}")
     logger.info(f"Learning rate: {training_config.learning_rate}")
     logger.info(f"Epochs: {training_config.num_train_epochs}")
+
+    # Log new features
+    logger.info(f"Save by steps: {training_config.save_by_steps}")
+    if training_config.save_by_steps:
+        logger.info(f"Save steps interval: {training_config.save_steps_interval}")
+    else:
+        logger.info("Save strategy: every epoch")
+    logger.info(f"Last token prediction: {training_config.last_token_prediction}")
+
     logger.info(f"Dataset path: {paths['dataset_dir']}")
     logger.info(f"Model output path: {training_config.output_dir}")
     logger.info(f"Config path: {paths['config_dir']}")
     logger.info("=" * 60)
 
+    # [Model creation code remains the same...]
     # Create model based on configuration
     logger.info("Creating model...")
     if training_config.model_name_or_path:
@@ -354,7 +436,7 @@ def main():
         max_samples_per_seed=getattr(training_config, "max_samples_per_seed", None),
     )
 
-    # Log dataset info
+    # Log dataset info with new features
     dataset_meta = metadata.get("seed_dataset_metadata", {})
     logger.info("Dataset preparation completed:")
     logger.info(f"  Separate train/eval loading: {dataset_meta.get('separate_train_eval', True)}")
@@ -370,6 +452,10 @@ def main():
     logger.info(f"  Shuffling enabled: {dataset_meta.get('shuffling_enabled', False)}")
     if dataset_meta.get("shuffling_enabled"):
         logger.info(f"  Shuffle strategy: {dataset_meta.get('shuffle_strategy', 'N/A')}")
+
+    # Log new features
+    logger.info(f"  Last token prediction: {training_config.last_token_prediction}")
+    logger.info("  Accuracy tracking: Enabled (computed alongside loss)")
 
     # Train the model
     logger.info("=" * 60)
@@ -394,7 +480,7 @@ def main():
     logger.info(f"Dataset base: {model_config.dataset_config.to_base_name()}")
     logger.info(f"Results saved to: {training_config.output_dir}")
 
-    # Log training metadata
+    # Log training metadata including new features
     train_meta = metadata.get("training_metadata", {})
     logger.info("Training metadata:")
     logger.info(f"  config_L: {train_meta.get('config_L', model_config.dataset_config.L)}")
@@ -404,6 +490,10 @@ def main():
     logger.info(f"  model_type: {train_meta.get('model_type')}")
     logger.info(f"  separate_train_eval: {train_meta.get('separate_train_eval')}")
     logger.info(f"  shuffling_enabled: {train_meta.get('shuffling_enabled')}")
+    logger.info(
+        f"  last_token_prediction: {train_meta.get('last_token_prediction', training_config.last_token_prediction)}"
+    )
+    logger.info(f"  save_by_steps: {train_meta.get('save_by_steps', training_config.save_by_steps)}")
 
     # Log hierarchical paths
     logger.info("Hierarchical structure:")
@@ -412,16 +502,16 @@ def main():
     logger.info(f"  Eval dataset: {paths['base_dataset_dir'] / 'eval'}")
     logger.info(f"  Model output: {paths['model_dir']}")
     logger.info(f"  Config dir: {paths['config_dir']}")
+
+    # Log final accuracy information
+    logger.info("Accuracy tracking:")
+    logger.info("  ✓ Token-level accuracy computed alongside loss")
+    logger.info("  ✓ Per-seed accuracy tracking enabled")
+    logger.info("  ✓ Accuracy metrics saved in seed_training_metrics.json")
+
     logger.info("=" * 60)
 
     return results
-
-
-def safe_format_number(value, default="N/A"):
-    """Safely format a number with commas, handling non-numeric values."""
-    if isinstance(value, (int, float)) and value is not None:
-        return f"{value:,}"
-    return default
 
 
 if __name__ == "__main__":
