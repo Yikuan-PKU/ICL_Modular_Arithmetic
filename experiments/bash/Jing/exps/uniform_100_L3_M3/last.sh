@@ -12,7 +12,7 @@
 # Define experiment parameters using the new simplified structure
 DATASET_TYPE="uniform"
 MODEL_TYPE="clm"
-NUM_SEEDS=1500
+NUM_SEEDS=100
 SEED=42
 L=3
 M=3
@@ -27,14 +27,14 @@ PIPELINE_ARGS="--verbose --resume"
 # =============================================================================
 # echo "============== Training model =============="
 
-# SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/train"
-# # Step 1: Validate configuration (optional)
-# echo "Step 1: Validating training configuration..."
-# python $SCRIPT_ROOT/train.py $SHARED_ARGS --dry-run
+SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/train"
+# Step 1: Validate configuration (optional)
+echo "Step 1: Validating training configuration..."
+python $SCRIPT_ROOT/train.py $SHARED_ARGS --last-token-prediction --dry-run
 
-# # Step 2: Train model
-# echo "Step 2: Training model..."
-# python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS
+# Step 2: Train model
+echo "Step 2: Training model..."
+python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS --last-token-prediction
 
 
 # =============================================================================

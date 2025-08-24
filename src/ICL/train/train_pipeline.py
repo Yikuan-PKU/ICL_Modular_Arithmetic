@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class RHMTrainer(Trainer):
-    """RHM trainer with seed-aware batching, hierarchical metrics, and accuracy tracking."""
+    """RHM trainer with seed-aware batching, hierarchical metrics, accuracy tracking, and enhanced logging."""
 
     def __init__(
         self,
@@ -43,25 +43,32 @@ class RHMTrainer(Trainer):
         config: RHMTrainingConfig | None = None,
         **kwargs,
     ):
-        """Initialize RHM trainer with seed-aware datasets and accuracy tracking.
-
-        Args:
-            model: The model to train
-            args: Training arguments
-            train_seed_datasets: Dict mapping seed -> training Dataset
-            eval_seed_datasets: Dict mapping seed -> evaluation Dataset
-            tokenizer: RHM tokenizer instance
-            config: RHM training configuration
-            **kwargs: Additional arguments for Trainer
-
-        """
+        """Initialize RHM trainer with enhanced logging for loss+accuracy."""
         self.rhm_config = config
         self.rhm_tokenizer = tokenizer
         self.train_seed_datasets = train_seed_datasets or {}
         self.eval_seed_datasets = eval_seed_datasets or {}
 
+        # ADDED: Validate model vocabulary size matches tokenizer
+        if hasattr(model, "config") and hasattr(model.config, "vocab_size"):
+            model_vocab_size = model.config.vocab_size
+            tokenizer_vocab_size = tokenizer.vocab_size
+
+            if model_vocab_size != tokenizer_vocab_size:
+                logger.error("Vocabulary size mismatch:")
+                logger.error(f"  Model vocab size: {model_vocab_size}")
+                logger.error(f"  Tokenizer vocab size: {tokenizer_vocab_size}")
+                raise ValueError(
+                    f"Model vocab size ({model_vocab_size}) != Tokenizer vocab size ({tokenizer_vocab_size}). "
+                    f"This will cause CUDA index out of bounds errors."
+                )
+            logger.info(f"✓ Vocabulary size consistency check passed: {model_vocab_size}")
+
+        # Track current step accuracy for logging
+        self.current_step_accuracy = None
+        self.step_accuracies = []  # Store recent accuracies for smoothing
+
         # We'll create combined datasets for the parent Trainer
-        # The actual seed-aware batching is handled by our custom dataloader
         train_dataset = CombinedSeedDataset(train_seed_datasets) if train_seed_datasets else None
         eval_dataset = CombinedSeedDataset(eval_seed_datasets) if eval_seed_datasets else None
 
@@ -76,12 +83,12 @@ class RHMTrainer(Trainer):
             **kwargs,
         )
 
-        # UPDATED: Track both loss and accuracy metrics per seed
+        # Track both loss and accuracy metrics per seed
         self.seed_metrics = defaultdict(list)
         self.epoch_seed_stats = defaultdict(lambda: defaultdict(lambda: {"losses": [], "accuracies": []}))
 
     def get_train_dataloader(self):
-        """Create training dataloader with seed-aware batching."""
+        """Create training dataloader with seed-aware batching and validation."""
         if self.train_seed_datasets is None or len(self.train_seed_datasets) == 0:
             raise ValueError("No training seed datasets provided")
 
@@ -97,7 +104,7 @@ class RHMTrainer(Trainer):
         return dataloader
 
     def get_eval_dataloader(self, eval_dataset=None):
-        """Create evaluation dataloader with seed-aware batching."""
+        """Create evaluation dataloader with seed-aware batching and validation."""
         if eval_dataset is None and (self.eval_seed_datasets is None or len(self.eval_seed_datasets) == 0):
             return None
 
@@ -113,21 +120,48 @@ class RHMTrainer(Trainer):
         return dataloader
 
     def compute_loss(self, model, inputs, return_outputs=False):
-        """Compute loss with seed tracking and accuracy calculation."""
+        """Compute loss with seed tracking, accuracy calculation, and step-level accuracy tracking."""
         # Extract seed information if available
         seeds = inputs.pop("seeds", None)
+
+        # Validate input token IDs before forward pass
+        if "input_ids" in inputs:
+            self._validate_batch_token_ids(inputs["input_ids"])
 
         # Get labels for accuracy computation
         labels = inputs.get("labels")
 
         # Standard loss computation - get outputs for accuracy calculation
-        outputs = model(**inputs)
-        loss = outputs.loss
+        try:
+            outputs = model(**inputs)
+            loss = outputs.loss
+        except RuntimeError as e:
+            if "index out of bounds" in str(e) or "CUDA error" in str(e):
+                logger.error("CUDA index error during forward pass")
+                logger.error(
+                    f"Input token ID range: {inputs['input_ids'].min().item()} - {inputs['input_ids'].max().item()}"
+                )
+                logger.error(f"Model vocab size: {model.config.vocab_size}")
+                logger.error(f"Tokenizer vocab size: {self.rhm_tokenizer.vocab_size}")
+                raise ValueError(
+                    f"Token ID out of bounds error. "
+                    f"Input range: [{inputs['input_ids'].min().item()}, {inputs['input_ids'].max().item()}], "
+                    f"Model vocab size: {model.config.vocab_size}"
+                ) from e
+            raise
 
-        # NEW: Compute accuracy alongside loss
+        # Compute accuracy alongside loss
         accuracy = None
         if labels is not None:
             accuracy = self._compute_accuracy(outputs.logits, labels)
+
+            # Store current step accuracy for logging
+            self.current_step_accuracy = accuracy
+            self.step_accuracies.append(accuracy)
+
+            # Keep rolling window of recent accuracies
+            if len(self.step_accuracies) > 100:  # Keep last 100 steps
+                self.step_accuracies = self.step_accuracies[-100:]
 
         # Track per-seed metrics if seed information is available
         if seeds is not None and hasattr(self, "_current_epoch"):
@@ -137,6 +171,34 @@ class RHMTrainer(Trainer):
         if return_outputs:
             return loss, outputs
         return loss
+
+    def _validate_batch_token_ids(self, input_ids: torch.Tensor) -> None:
+        """Validate that all token IDs in batch are within vocabulary bounds."""
+        min_id = input_ids.min().item()
+        max_id = input_ids.max().item()
+        vocab_size = self.rhm_tokenizer.vocab_size
+
+        if min_id < 0:
+            raise ValueError(f"Negative token ID found: {min_id}")
+
+        if max_id >= vocab_size:
+            # Log detailed information about the problematic batch
+            logger.error("Token ID out of bounds in batch:")
+            logger.error(f"  Token ID range: {min_id} - {max_id}")
+            logger.error(f"  Vocabulary size: {vocab_size}")
+            logger.error(f"  Batch shape: {input_ids.shape}")
+
+            # Find which positions have invalid IDs
+            invalid_mask = input_ids >= vocab_size
+            invalid_positions = torch.where(invalid_mask)
+            invalid_ids = input_ids[invalid_mask].unique()
+
+            logger.error(f"  Invalid token IDs: {invalid_ids.tolist()}")
+            logger.error(f"  Number of invalid positions: {invalid_mask.sum().item()}")
+
+            raise ValueError(
+                f"Token ID {max_id} exceeds vocabulary size {vocab_size}. Invalid IDs: {invalid_ids.tolist()}"
+            )
 
     def _compute_accuracy(self, logits: torch.Tensor, labels: torch.Tensor) -> float:
         """Compute token-level accuracy for valid (non-masked) positions."""
@@ -174,6 +236,46 @@ class RHMTrainer(Trainer):
             if accuracy is not None:
                 self.epoch_seed_stats[current_epoch][seed]["accuracies"].append(accuracy)
 
+    def log(self, logs: dict[str, float]) -> None:
+        """Override logging to always include accuracy alongside loss."""
+        # Add current step accuracy to logs if available
+        if self.current_step_accuracy is not None:
+            logs["train_accuracy"] = self.current_step_accuracy
+
+        # Add smoothed accuracy if we have enough samples
+        if len(self.step_accuracies) >= 10:
+            smoothed_acc = sum(self.step_accuracies[-10:]) / 10  # Last 10 steps average
+            logs["train_accuracy_smoothed"] = smoothed_acc
+
+        # Call parent logging
+        super().log(logs)
+
+        # Custom logging that always shows loss + accuracy together
+        if "train_loss" in logs:
+            loss_val = logs["train_loss"]
+            acc_val = logs.get("train_accuracy", "N/A")
+            acc_smooth = logs.get("train_accuracy_smoothed", "N/A")
+
+            if isinstance(acc_val, (int, float)):
+                if isinstance(acc_smooth, (int, float)):
+                    logger.info(
+                        f"Step {self.state.global_step}: loss={loss_val:.4f}, acc={acc_val:.4f} (smooth: {acc_smooth:.4f})"
+                    )
+                else:
+                    logger.info(f"Step {self.state.global_step}: loss={loss_val:.4f}, acc={acc_val:.4f}")
+            else:
+                logger.info(f"Step {self.state.global_step}: loss={loss_val:.4f}, acc={acc_val}")
+
+        # Enhanced eval logging
+        if "eval_loss" in logs:
+            eval_loss = logs["eval_loss"]
+            eval_acc = logs.get("eval_accuracy", "N/A")
+
+            if isinstance(eval_acc, (int, float)):
+                logger.info(f"Eval: loss={eval_loss:.4f}, acc={eval_acc:.4f}")
+            else:
+                logger.info(f"Eval: loss={eval_loss:.4f}, acc={eval_acc}")
+
     def on_epoch_begin(self, args, state, control, **kwargs):
         """Track epoch beginning for seed-specific metrics."""
         self._current_epoch = int(state.epoch) if state.epoch is not None else 0
@@ -207,30 +309,36 @@ class RHMTrainer(Trainer):
                     )
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
-        """Enhanced evaluation with seed-specific metrics including accuracy."""
+        """Enhanced evaluation with seed-specific metrics and consistent loss+accuracy logging."""
         # Standard evaluation
         results = super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
 
-        # Add seed-specific metrics if available
+        # Compute overall evaluation accuracy from seed-specific accuracies
+        current_epoch = getattr(self, "_current_epoch", 0)
+        if current_epoch in self.epoch_seed_stats:
+            all_eval_accuracies = []
+
+            for seed in self.eval_seed_datasets.keys():
+                if seed in self.epoch_seed_stats[current_epoch]:
+                    metrics = self.epoch_seed_stats[current_epoch][seed]
+                    accuracies = metrics["accuracies"]
+
+                    if accuracies:
+                        seed_avg_acc = sum(accuracies) / len(accuracies)
+                        all_eval_accuracies.append(seed_avg_acc)
+                        results[f"eval_seed_{seed}_accuracy"] = seed_avg_acc
+                        results[f"eval_seed_{seed}_loss"] = sum(metrics["losses"]) / len(metrics["losses"])
+                        results[f"eval_seed_{seed}_count"] = len(metrics["losses"])
+
+            # Compute overall eval accuracy
+            if all_eval_accuracies:
+                overall_eval_acc = sum(all_eval_accuracies) / len(all_eval_accuracies)
+                results["eval_accuracy"] = overall_eval_acc
+
+        # Add hierarchical metrics if enabled
         if self.rhm_config and self.rhm_config.track_hierarchical_metrics:
             hierarchical_metrics = self._compute_hierarchical_metrics()
             results.update(hierarchical_metrics)
-
-        # Add seed-specific evaluation metrics (both loss and accuracy)
-        current_epoch = getattr(self, "_current_epoch", 0)
-        if current_epoch in self.epoch_seed_stats:
-            for seed in self.train_seed_datasets.keys():
-                if seed in self.epoch_seed_stats[current_epoch]:
-                    metrics = self.epoch_seed_stats[current_epoch][seed]
-                    losses = metrics["losses"]
-                    accuracies = metrics["accuracies"]
-
-                    if losses:
-                        results[f"eval_seed_{seed}_loss"] = sum(losses) / len(losses)
-                        results[f"eval_seed_{seed}_count"] = len(losses)
-
-                    if accuracies:
-                        results[f"eval_seed_{seed}_accuracy"] = sum(accuracies) / len(accuracies)
 
         return results
 
@@ -278,7 +386,7 @@ class RHMTrainer(Trainer):
         return metrics
 
     def save_model(self, output_dir=None, _internal_call=False):
-        """Save model with enhanced metadata including seed information and accuracy."""
+        """Save model with enhanced metadata including seed information, accuracy, and validation info."""
         # Save using parent method
         super().save_model(output_dir, _internal_call)
 
@@ -319,16 +427,29 @@ class RHMTrainer(Trainer):
                 "save_by_steps": self.rhm_config.save_by_steps,
             },
             "available_seeds": list(self.train_seed_datasets.keys()),
+            # Token validation metadata
+            "vocab_validation": {
+                "model_vocab_size": self.model.config.vocab_size if hasattr(self.model, "config") else None,
+                "tokenizer_vocab_size": self.rhm_tokenizer.vocab_size,
+                "rhm_vocab_size": self.rhm_tokenizer.rhm_vocab_size,
+                "special_token_ids": {
+                    "pad": self.rhm_tokenizer.pad_token_id,
+                    "eos": self.rhm_tokenizer.eos_token_id,
+                    "sep": self.rhm_tokenizer.sep_token_id,
+                    "mask": self.rhm_tokenizer.mask_token_id,
+                    "unk": self.rhm_tokenizer.unk_token_id,
+                },
+            },
         }
 
         with open(seed_metrics_file, "w") as f:
             json.dump(seed_metrics_data, f, indent=2)
 
-        logger.info(f"Saved seed training metrics (loss + accuracy) to: {seed_metrics_file}")
+        logger.info(f"Saved seed training metrics (loss + accuracy + validation) to: {seed_metrics_file}")
 
 
 class SeedMetricsCallback(TrainerCallback):
-    """Callback for enhanced seed-specific metrics tracking including accuracy."""
+    """Callback for enhanced seed-specific metrics tracking with consistent loss+accuracy logging."""
 
     def __init__(self, config: RHMTrainingConfig, tokenizer: RHMTokenizer):
         """Initialize seed metrics callback."""
@@ -337,7 +458,7 @@ class SeedMetricsCallback(TrainerCallback):
         self.epoch_count = 0
 
     def on_epoch_begin(self, args, state, control, **kwargs):
-        """Log epoch beginning with seed configuration."""
+        """Log epoch beginning with complete configuration."""
         self.epoch_count += 1
         logger.info(f"=== EPOCH {self.epoch_count} BEGIN ===")
         logger.info(f"Seed balanced batching: {self.config.seed_balanced_batching}")
@@ -345,8 +466,14 @@ class SeedMetricsCallback(TrainerCallback):
         logger.info(f"Seeds per batch: {self.config.seeds_per_batch}")
         logger.info(f"Last token prediction: {self.config.last_token_prediction}")
 
+        # Log evaluation strategy
+        if self.config.eval_by_steps:
+            logger.info(f"Evaluation: every {self.config.eval_steps_interval} steps")
+        else:
+            logger.info("Evaluation: every epoch")
+
     def on_epoch_end(self, args, state, control, **kwargs):
-        """Log epoch completion with checkpoint information."""
+        """Log epoch completion with both loss and accuracy statistics."""
         logger.info(f"=== EPOCH {self.epoch_count} END ===")
 
         # Log save strategy
@@ -361,20 +488,44 @@ class SeedMetricsCallback(TrainerCallback):
             if "learning_rate" in last_log:
                 logger.info(f"Learning rate: {last_log['learning_rate']:.2e}")
 
+            # ADDED: Log training metrics from epoch
+            if "train_loss" in last_log:
+                train_loss = last_log["train_loss"]
+                train_acc = last_log.get("train_accuracy", "N/A")
+                train_acc_smooth = last_log.get("train_accuracy_smoothed", "N/A")
+
+                logger.info("Training metrics:")
+                if isinstance(train_acc, (int, float)) and isinstance(train_acc_smooth, (int, float)):
+                    logger.info(
+                        f"  Loss: {train_loss:.4f}, Accuracy: {train_acc:.4f} (smoothed: {train_acc_smooth:.4f})"
+                    )
+                elif isinstance(train_acc, (int, float)):
+                    logger.info(f"  Loss: {train_loss:.4f}, Accuracy: {train_acc:.4f}")
+                else:
+                    logger.info(f"  Loss: {train_loss:.4f}, Accuracy: {train_acc}")
+
     def on_evaluate(self, args, state, control, model, logs=None, **kwargs):
-        """Enhanced evaluation logging with seed information and accuracy."""
+        """Enhanced evaluation logging with consistent loss+accuracy display."""
         if logs is None:
             return
 
-        logger.info(f"Evaluation at epoch {self.epoch_count}:")
-        logger.info(f"  Eval loss: {logs.get('eval_loss', 'N/A'):.4f}")
+        logger.info("=== EVALUATION ===")
 
-        # Log seed-specific metrics if available (both loss and accuracy)
+        # Main evaluation metrics with both loss and accuracy
+        eval_loss = logs.get("eval_loss", "N/A")
+        eval_acc = logs.get("eval_accuracy", "N/A")
+
+        if isinstance(eval_loss, (int, float)) and isinstance(eval_acc, (int, float)):
+            logger.info(f"Overall: loss={eval_loss:.4f}, accuracy={eval_acc:.4f}")
+        else:
+            logger.info(f"Overall: loss={eval_loss}, accuracy={eval_acc}")
+
+        # Seed-specific metrics with both loss and accuracy
         seed_loss_metrics = {k: v for k, v in logs.items() if k.startswith("eval_seed_") and k.endswith("_loss")}
         seed_acc_metrics = {k: v for k, v in logs.items() if k.startswith("eval_seed_") and k.endswith("_accuracy")}
 
         if seed_loss_metrics or seed_acc_metrics:
-            logger.info("  Seed-specific metrics:")
+            logger.info("Seed-specific metrics:")
 
             # Group metrics by seed
             seeds = set()
@@ -385,29 +536,38 @@ class SeedMetricsCallback(TrainerCallback):
                 seed = metric.split("_")[2]  # extract seed from eval_seed_X_accuracy
                 seeds.add(seed)
 
-            for seed in sorted(seeds):
+            for seed in sorted(seeds, key=int):
                 loss_key = f"eval_seed_{seed}_loss"
                 acc_key = f"eval_seed_{seed}_accuracy"
+                count_key = f"eval_seed_{seed}_count"
+
                 loss_val = logs.get(loss_key, "N/A")
                 acc_val = logs.get(acc_key, "N/A")
+                count_val = logs.get(count_key, "N/A")
 
                 if isinstance(loss_val, (int, float)) and isinstance(acc_val, (int, float)):
-                    logger.info(f"    Seed {seed}: loss={loss_val:.4f}, acc={acc_val:.4f}")
-                elif isinstance(loss_val, (int, float)):
-                    logger.info(f"    Seed {seed}: loss={loss_val:.4f}, acc={acc_val}")
+                    logger.info(f"  Seed {seed:3s}: loss={loss_val:.4f}, acc={acc_val:.4f} (n={count_val})")
                 else:
-                    logger.info(f"    Seed {seed}: loss={loss_val}, acc={acc_val}")
+                    logger.info(f"  Seed {seed:3s}: loss={loss_val}, acc={acc_val} (n={count_val})")
 
         # Log aggregate accuracy metrics
         if "eval_avg_seed_accuracy" in logs:
-            logger.info(f"  Average seed accuracy: {logs['eval_avg_seed_accuracy']:.4f}")
+            logger.info(f"Average seed accuracy: {logs['eval_avg_seed_accuracy']:.4f}")
         if "eval_seed_accuracy_std" in logs:
-            logger.info(f"  Seed accuracy std: {logs['eval_seed_accuracy_std']:.4f}")
+            logger.info(f"Seed accuracy std: {logs['eval_seed_accuracy_std']:.4f}")
+
+    def on_log(self, args, state, control, model, logs=None, **kwargs):
+        """Intercept all logging to ensure loss+accuracy are always shown together."""
+        if logs is None:
+            return
+
+        # This gets called for every log event, including training steps
+        # The custom logging is handled in the overridden log() method above
 
     def on_train_begin(self, args, state, control, **kwargs):
-        """Log training configuration at start."""
+        """Log training configuration at start with complete feature summary."""
         logger.info("=== TRAINING BEGIN ===")
-        logger.info("Seed-based training configuration:")
+        logger.info("Enhanced training configuration:")
         logger.info(f"  Tokenizer vocab size: {self.tokenizer.vocab_size}")
         logger.info(f"  Seed balanced batching: {self.config.seed_balanced_batching}")
         logger.info(f"  Seed sampling strategy: {self.config.seed_sampling_strategy}")
@@ -421,32 +581,45 @@ class SeedMetricsCallback(TrainerCallback):
         else:
             logger.info("  Checkpointing: every epoch")
 
+        # NEW: Log evaluation strategy
+        if self.config.eval_by_steps:
+            logger.info(f"  Evaluation: every {self.config.eval_steps_interval} steps")
+        else:
+            logger.info("  Evaluation: every epoch")
+
+        logger.info(f"  Logging: loss+accuracy every {self.config.logging_steps} steps")
+
     def on_train_end(self, args, state, control, **kwargs):
-        """Log training completion."""
+        """Log training completion with final metrics summary."""
         logger.info("=== TRAINING COMPLETE ===")
         logger.info(f"Total epochs completed: {self.epoch_count}")
         logger.info(f"Final model saved to: {args.output_dir}")
 
+        # Log final metrics if available
+        if hasattr(state, "log_history") and state.log_history:
+            final_log = state.log_history[-1]
+            final_loss = final_log.get("train_loss", "N/A")
+            final_acc = final_log.get("train_accuracy", "N/A")
+
+            logger.info("Final training metrics:")
+            if isinstance(final_loss, (int, float)) and isinstance(final_acc, (int, float)):
+                logger.info(f"  Loss: {final_loss:.4f}, Accuracy: {final_acc:.4f}")
+            else:
+                logger.info(f"  Loss: {final_loss}, Accuracy: {final_acc}")
+
 
 class HierarchicalMetricsCallback(TrainerCallback):
-    """Callback for computing hierarchical-specific metrics during training."""
+    """Callback for computing hierarchical-specific metrics with enhanced accuracy tracking."""
 
     def __init__(self, eval_dataset: Dataset, config: RHMTrainingConfig, tokenizer: RHMTokenizer):
-        """Initialize metrics callback.
-
-        Args:
-            eval_dataset: Evaluation dataset for computing metrics
-            config: Training configuration
-            tokenizer: RHM tokenizer instance
-
-        """
+        """Initialize metrics callback."""
         self.eval_dataset = eval_dataset
         self.config = config
         self.tokenizer = tokenizer
         self.step_count = 0
 
     def on_evaluate(self, args, state, control, model, logs=None, **kwargs):
-        """Compute additional metrics during evaluation."""
+        """Compute additional metrics during evaluation with loss+accuracy focus."""
         if logs is None:
             return
 
@@ -455,7 +628,7 @@ class HierarchicalMetricsCallback(TrainerCallback):
         # Add hierarchical evaluation metrics
         logs["hierarchical_eval_count"] = self.step_count
 
-        # Track special token usage and accuracy
+        # Track special token usage
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()
 
@@ -471,16 +644,18 @@ class HierarchicalMetricsCallback(TrainerCallback):
                     norm = torch.norm(embeddings.weight[token_id]).item()
                     logs[f"special_token_{token_name}_norm"] = norm
 
-        # Log enhanced evaluation info
-        logger.info(f"Hierarchical evaluation #{self.step_count} completed")
-        logger.info(f"Current eval loss: {logs.get('eval_loss', 'N/A'):.4f}")
+        # ENHANCED: Log evaluation with both metrics prominently
+        eval_loss = logs.get("eval_loss", "N/A")
+        eval_acc = logs.get("eval_accuracy", "N/A")
 
-        # Log accuracy if available
-        if "eval_avg_seed_accuracy" in logs:
-            logger.info(f"Current eval accuracy: {logs['eval_avg_seed_accuracy']:.4f}")
+        logger.info(f"Hierarchical evaluation #{self.step_count}:")
+        if isinstance(eval_loss, (int, float)) and isinstance(eval_acc, (int, float)):
+            logger.info(f"  Loss: {eval_loss:.4f}, Accuracy: {eval_acc:.4f}")
+        else:
+            logger.info(f"  Loss: {eval_loss}, Accuracy: {eval_acc}")
 
     def on_train_begin(self, args, state, control, **kwargs):
-        """Log tokenizer information at training start."""
+        """Log tokenizer and feature information at training start."""
         logger.info(f"Training with RHM tokenizer (vocab_size: {self.tokenizer.vocab_size})")
         logger.info(
             f"Special tokens - PAD: {self.tokenizer.pad_token_id}, "
@@ -490,9 +665,12 @@ class HierarchicalMetricsCallback(TrainerCallback):
         )
 
         if self.config.last_token_prediction:
-            logger.info(
-                "Last-token prediction mode enabled - only final tokens in sentences will be used for loss computation"
-            )
+            logger.info("Last-token prediction ENABLED:")
+            logger.info("  → Only final tokens in sentences contribute to loss")
+            logger.info("  → Sentences separated by <sep> and <eos> tokens")
+            logger.info("  → Model directory will use 'last' prefix")
+        else:
+            logger.info("Standard token prediction (all valid tokens contribute to loss)")
 
 
 class HierarchicalMetricsCallback(TrainerCallback):
@@ -633,8 +811,6 @@ def create_rhm_training_pipeline(
     eval_seeds = validation["eval_seeds_found"]
 
     logger.info(f"✓ Dataset validation passed: L={L}, m={m}")
-    logger.info(f"  Train seeds: {train_seeds}")
-    logger.info(f"  Eval seeds: {eval_seeds}")
 
     # Update training config output directory and model naming
     model_suffix = training_config.get_model_suffix()
@@ -666,12 +842,6 @@ def create_rhm_training_pipeline(
 
     logger.info(f"Training samples: {total_train_samples} across {len(train_seed_datasets)} seeds")
     logger.info(f"Evaluation samples: {total_eval_samples} across {len(eval_seed_datasets)} seeds")
-
-    # Log seed-specific statistics
-    for seed in train_seed_datasets.keys():
-        train_size = len(train_seed_datasets[seed])
-        eval_size = len(eval_seed_datasets[seed])
-        logger.info(f"  Seed {seed}: {train_size} train, {eval_size} eval")
 
     # Validate that loaded seeds match expected seeds
     loaded_train_seeds = set(train_seed_datasets.keys())

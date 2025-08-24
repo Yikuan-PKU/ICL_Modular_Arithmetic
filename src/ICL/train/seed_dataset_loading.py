@@ -51,7 +51,7 @@ def load_separate_seed_datasets(
         seed_index = json.load(f)
 
     available_seeds = seed_index["available_seeds"]
-    logger.info(f"Found {len(available_seeds)} seed datasets in {subdirectory}: {available_seeds}")
+    logger.info(f"Found {len(available_seeds)} seed datasets in {subdirectory}")
 
     # Load metadata
     metadata_path = target_path / "metadata.pkl"
@@ -72,7 +72,7 @@ def load_separate_seed_datasets(
         try:
             seed_dataset = load_from_disk(str(seed_dataset_path))
             seed_datasets[seed] = seed_dataset
-            logger.info(f"  ✓ Loaded seed {seed} ({subdirectory}): {len(seed_dataset)} sequences")
+            # logger.info(f"  ✓ Loaded seed {seed} ({subdirectory}): {len(seed_dataset)} sequences")
         except Exception as e:
             logger.warning(f"  ✗ Failed to load seed {seed} ({subdirectory}): {e}")
             continue
@@ -167,12 +167,6 @@ def prepare_seed_based_dataset(
     total_train_sequences = sum(len(dataset) for dataset in packed_train_seed_datasets.values())
     total_eval_sequences = sum(len(dataset) for dataset in packed_eval_seed_datasets.values())
 
-    # Log statistics per seed
-    for seed in packed_train_seed_datasets.keys():
-        train_size = len(packed_train_seed_datasets[seed])
-        eval_size = len(packed_eval_seed_datasets[seed])
-        logger.info(f"  Seed {seed}: {train_size} train, {eval_size} val")
-
     # Enhanced metadata combining train and eval information
     metadata = {
         # Original dataset sizes (before packing)
@@ -236,7 +230,7 @@ def pack_seed_datasets(
     total_packed = 0
 
     for seed, dataset in seed_datasets.items():
-        logger.info(f"  Packing seed {seed} ({len(dataset)} sequences)...")
+        # logger.info(f"  Packing seed {seed} ({len(dataset)} sequences)...")
 
         # Apply cross-configuration shuffling if enabled
         if config.shuffle_before_packing:
@@ -249,7 +243,7 @@ def pack_seed_datasets(
         total_original += len(dataset)
         total_packed += len(packed_dataset)
 
-        logger.info(f"    ✓ Seed {seed}: {len(dataset)} → {len(packed_dataset)} packed sequences")
+        # logger.info(f"    ✓ Seed {seed}: {len(dataset)} → {len(packed_dataset)} packed sequences")
 
     logger.info(
         f"Packing complete: {total_original} → {total_packed} packed sequences across {len(seed_datasets)} seeds"

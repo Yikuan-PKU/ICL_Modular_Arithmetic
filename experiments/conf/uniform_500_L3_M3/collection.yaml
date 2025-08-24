@@ -22,5 +22,5 @@ collection_config:
     selective_attention: "all"       # Options: "all", "last", "first", "middle"
     attention_layers: null           # Specific layers: [0, 5, 11] or null for all
     attention_heads: null            # Specific heads: [0, 1, 7] or null for all  
-    attention_sampling_rate: 1.0     # Fraction of sequences to capture attention (0.0-1.0)
+    attention_sampling_rate: 0.1     # Fraction of sequences to capture attention (0.0-1.0)
 
