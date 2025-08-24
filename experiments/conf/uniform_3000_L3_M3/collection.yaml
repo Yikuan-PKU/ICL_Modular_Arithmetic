@@ -4,13 +4,13 @@
 collection_config:
   # Evaluation parameters (original)
   evaluation_parameters:
-    context_sizes: [1, 5, 10, 15, 20, 25]
+    context_sizes: [1, 5, 10, 15, 20, 25, 30, 35, 40]
     control_types: ["normal", "shuffled_context", "random_context"]
 
   # Execution parameters (original + new memory management)
   execution_parameters:
     # Basic execution settings
-    batch_size: 32
+    batch_size: 16
     max_sequences_per_condition: 200
     capture_attention: true
     

@@ -12,8 +12,8 @@ max_position_embeddings: 2048
 
 # Training parameters (shared)
 num_train_epochs: 20
-per_device_train_batch_size: 32
-per_device_eval_batch_size: 64
+per_device_train_batch_size: 16
+per_device_eval_batch_size: 16
 gradient_accumulation_steps: 1
 learning_rate: 1e-3
 weight_decay: 0.01
@@ -47,9 +47,9 @@ load_best_model_at_end: true
 metric_for_best_model: "eval_loss"
 
 # NEW: Evaluation strategy (shared)
-eval_by_steps: false  # If true, evaluate by steps instead of epochs
+eval_by_steps: true  # If true, evaluate by steps instead of epochs
 eval_steps_interval: 100  # Steps interval when eval_by_steps=true
-evaluation_strategy: "epoch"  # Will be overridden based on eval_by_steps
+evaluation_strategy: "step"  # Will be overridden based on eval_by_steps
 eval_steps: 1  # Will be overridden based on eval_by_steps
 
 # Logging (shared)
@@ -99,16 +99,3 @@ task_specific:
     mlm_probability: 0.15
     last_token_prediction: false
     # Results in directory: models/uniform_10_L4_M2/mlm_noshuffle_seedbalanced/
-
-# Example configurations for different evaluation strategies:
-# 
-# For epoch-based evaluation (default):
-# eval_by_steps: false
-# evaluation_strategy: "epoch"
-# eval_steps: 1
-#
-# For steps-based evaluation:
-# eval_by_steps: true
-# eval_steps_interval: 100
-# evaluation_strategy: "steps"  # Will be set automatically
-# eval_steps: 100  # Will be set automatically

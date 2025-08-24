@@ -448,7 +448,6 @@ def main():
     )
     logger.info(f"  Packed train size: {safe_format_number(dataset_meta.get('total_train_sequences'))}")
     logger.info(f"  Packed eval size: {safe_format_number(dataset_meta.get('total_eval_sequences'))}")
-    logger.info(f"  Available seeds: {dataset_meta.get('available_seeds', [])}")
     logger.info(f"  Shuffling enabled: {dataset_meta.get('shuffling_enabled', False)}")
     if dataset_meta.get("shuffling_enabled"):
         logger.info(f"  Shuffle strategy: {dataset_meta.get('shuffle_strategy', 'N/A')}")

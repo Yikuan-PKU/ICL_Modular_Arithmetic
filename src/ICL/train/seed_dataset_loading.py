@@ -202,7 +202,6 @@ def prepare_seed_based_dataset(
 
     logger.info(f"Total train sequences: {total_train_sequences:,}")
     logger.info(f"Total eval sequences: {total_eval_sequences:,}")
-    logger.info(f"Available seeds: {list(packed_train_seed_datasets.keys())}")
     logger.info(f"Tokenizer vocab size: {tokenizer.vocab_size}")
     logger.info("=" * 60)
 

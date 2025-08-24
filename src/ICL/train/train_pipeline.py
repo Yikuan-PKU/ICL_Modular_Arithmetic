@@ -447,6 +447,129 @@ class RHMTrainer(Trainer):
 
         logger.info(f"Saved seed training metrics (loss + accuracy + validation) to: {seed_metrics_file}")
 
+    # Add these methods to your RHMTrainer class
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only: bool,
+        ignore_keys=None,
+    ):
+        """Override prediction step to compute accuracy during evaluation."""
+        # Call parent method to get loss and logits
+        loss, logits, labels = super().prediction_step(
+            model, inputs, prediction_loss_only=False, ignore_keys=ignore_keys
+        )
+
+        # Compute accuracy if we have logits and labels
+        if logits is not None and labels is not None:
+            # Store current evaluation accuracy for logging
+            eval_accuracy = self._compute_accuracy(logits, labels)
+
+            # Store in instance variable for evaluate() method to access
+            if not hasattr(self, "_current_eval_accuracies"):
+                self._current_eval_accuracies = []
+            self._current_eval_accuracies.append(eval_accuracy)
+
+            # Debug logging
+            logger.debug(f"Evaluation step accuracy: {eval_accuracy:.4f}")
+
+        return loss, logits, labels
+
+    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
+        """Enhanced evaluation that computes average accuracy from prediction steps."""
+        # Reset evaluation accuracy storage
+        self._current_eval_accuracies = []
+
+        # Call parent evaluation (this will trigger prediction_step for each batch)
+        results = super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
+
+        # Compute average evaluation accuracy from all prediction steps
+        if hasattr(self, "_current_eval_accuracies") and self._current_eval_accuracies:
+            # Filter out any None values and compute average
+            valid_accuracies = [acc for acc in self._current_eval_accuracies if acc is not None]
+
+            if valid_accuracies:
+                avg_eval_accuracy = sum(valid_accuracies) / len(valid_accuracies)
+                results["eval_accuracy"] = avg_eval_accuracy
+
+                logger.info(f"✓ Computed eval_accuracy: {avg_eval_accuracy:.4f} from {len(valid_accuracies)} batches")
+            else:
+                logger.warning("❌ No valid accuracies computed during evaluation")
+        else:
+            logger.warning("❌ No evaluation accuracies collected")
+
+        # Add seed-specific metrics from training if available
+        current_epoch = getattr(self, "_current_epoch", 0)
+        if current_epoch in self.epoch_seed_stats:
+            for seed in self.train_seed_datasets.keys():
+                if seed in self.epoch_seed_stats[current_epoch]:
+                    metrics = self.epoch_seed_stats[current_epoch][seed]
+                    losses = metrics["losses"]
+                    accuracies = metrics["accuracies"]
+
+                    if losses:
+                        results[f"eval_seed_{seed}_loss"] = sum(losses) / len(losses)
+                        results[f"eval_seed_{seed}_count"] = len(losses)
+
+                    if accuracies:
+                        results[f"eval_seed_{seed}_accuracy"] = sum(accuracies) / len(accuracies)
+
+        # Add hierarchical metrics if enabled
+        if self.rhm_config and self.rhm_config.track_hierarchical_metrics:
+            hierarchical_metrics = self._compute_hierarchical_metrics()
+            results.update(hierarchical_metrics)
+
+        return results
+
+    def _compute_accuracy(self, logits: torch.Tensor, labels: torch.Tensor) -> float:
+        """Compute token-level accuracy with proper error handling."""
+        try:
+            # Handle different input types (logits might be tuple from prediction_step)
+            if isinstance(logits, tuple):
+                logits = logits[0]  # Extract logits tensor
+
+            # Ensure tensors are on the same device
+            if logits.device != labels.device:
+                labels = labels.to(logits.device)
+
+            # Handle sequence length mismatch (common in CLM)
+            if logits.dim() == 3 and labels.dim() == 2:  # [batch, seq, vocab] vs [batch, seq]
+                if logits.size(1) != labels.size(1):
+                    if logits.size(1) == labels.size(1) + 1:
+                        # CLM case: logits has extra position, remove it
+                        logits = logits[:, :-1, :].contiguous()
+                    elif logits.size(1) + 1 == labels.size(1):
+                        # Alternative: labels has extra position
+                        labels = labels[:, 1:].contiguous()
+                    else:
+                        logger.debug(f"Cannot handle shape mismatch: logits {logits.shape}, labels {labels.shape}")
+                        return 0.0
+
+            # Get predictions
+            predictions = torch.argmax(logits, dim=-1)
+
+            # Create mask for valid positions (labels != -100)
+            valid_mask = labels != -100
+            valid_count = valid_mask.sum().item()
+
+            if valid_count == 0:
+                # All tokens are masked - this might happen with last-token prediction
+                logger.debug("All tokens masked in batch, accuracy = 0.0")
+                return 0.0
+
+            # Calculate accuracy
+            correct_predictions = (predictions == labels) & valid_mask
+            correct_count = correct_predictions.sum().item()
+            accuracy = correct_count / valid_count
+
+            return accuracy
+
+        except Exception as e:
+            logger.debug(f"Error computing accuracy: {e}")
+            return 0.0
+
 
 class SeedMetricsCallback(TrainerCallback):
     """Callback for enhanced seed-specific metrics tracking with consistent loss+accuracy logging."""

@@ -12,7 +12,7 @@
 # Define experiment parameters using the new simplified structure
 DATASET_TYPE="uniform"
 MODEL_TYPE="clm"
-NUM_SEEDS=3000
+NUM_SEEDS=100
 SEED=42
 L=3
 M=3
