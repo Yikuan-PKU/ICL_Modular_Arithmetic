@@ -8,7 +8,7 @@ hidden_size: 512
 num_hidden_layers: 6
 num_attention_heads: 8
 intermediate_size: 2048
-max_position_embeddings: 2048
+max_position_embeddings: 91
 
 # Training parameters (shared)
 num_train_epochs: 20
@@ -38,9 +38,9 @@ seeds_per_batch: null  # null = use all available seeds
 last_token_prediction: false  # Enable last-token prediction masking
 
 # Checkpointing strategy (shared)
-save_by_steps: false  # If true, save by steps instead of epochs
+save_by_steps: true  # If true, save by steps instead of epochs
 save_steps_interval: 500  # Steps interval when save_by_steps=true
-save_strategy: "epoch"  # Will be overridden based on save_by_steps
+save_strategy: "step"  # Will be overridden based on save_by_steps
 save_steps: 1  # Will be overridden based on save_by_steps
 save_total_limit: 100
 load_best_model_at_end: true
@@ -49,7 +49,7 @@ metric_for_best_model: "eval_loss"
 # NEW: Evaluation strategy (shared)
 eval_by_steps: true  # If true, evaluate by steps instead of epochs
 eval_steps_interval: 100  # Steps interval when eval_by_steps=true
-evaluation_strategy: "step"  # Will be overridden based on eval_by_steps
+evaluation_strategy: "steps"  # Will be overridden based on eval_by_steps
 eval_steps: 1  # Will be overridden based on eval_by_steps
 
 # Logging (shared)
