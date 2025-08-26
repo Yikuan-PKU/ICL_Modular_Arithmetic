@@ -38,9 +38,9 @@ seeds_per_batch: null  # null = use all available seeds
 last_token_prediction: false  # Enable last-token prediction masking
 
 # Checkpointing strategy (shared)
-save_by_steps: false  # If true, save by steps instead of epochs
+save_by_steps: true  # If true, save by steps instead of epochs
 save_steps_interval: 500  # Steps interval when save_by_steps=true
-save_strategy: "epoch"  # Will be overridden based on save_by_steps
+save_strategy: "step"  # Will be overridden based on save_by_steps
 save_steps: 1  # Will be overridden based on save_by_steps
 save_total_limit: 100
 load_best_model_at_end: true
