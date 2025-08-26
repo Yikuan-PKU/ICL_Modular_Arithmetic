@@ -1,10 +1,11 @@
 import re
 from collections import defaultdict
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
-from scipy.stats import entropy, spearmanr
-from sklearn.cluster import MiniBatchKMeans
+from scipy.stats import entropy, pearsonr
+from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 ########################################
@@ -98,11 +99,11 @@ class AttentionDataLoaderBatch:
                     continue
 
             # Filter by max_shots
-            if self.max_shots is not None and n_shots <= self.max_shots:
+            if self.max_shots is not None and n_shots >= self.max_shots:
                 continue
 
             # Stop if max_sequences reached
-            if self.max_sequences is not None and seq_id <= self.max_sequences:
+            if self.max_sequences is not None and seq_id >= self.max_sequences:
                 continue
 
             # Load attention matrix
@@ -144,317 +145,256 @@ class AttentionDataLoaderBatch:
 ########################################
 
 
-# batch loader
-class AttentionPatternExtractorStreaming:
-    """Streaming, batch-safe feature extractor for Phase-1 analysis"""
+class FeatureExtractor:
+    """Extracts attention features batch-wise and accumulates globally."""
 
-    def __init__(self, n_layers=6, n_heads=8, missing_data_strategy="skip"):
-        self.n_layers = n_layers
-        self.n_heads = n_heads
-        self.missing_data_strategy = missing_data_strategy  # 'skip', 'nan', 'zero'
+    def __init__(self):
+        self.global_features = []
 
-    def _handle_missing_data(self, value, default_value=0.0):
-        if self.missing_data_strategy == "skip":
-            return None
-        if self.missing_data_strategy == "nan":
-            return np.nan
-        if self.missing_data_strategy == "zero":
-            return default_value
-        return value
-
-    def compute_attention_entropy(self, attention_matrix):
-        if attention_matrix is None:
-            return self._handle_missing_data(None, 0.0)
-        attention_matrix += 1e-8
-        try:
-            return float(np.mean([entropy(row) for row in attention_matrix]))
-        except:
-            return self._handle_missing_data(None, 0.0)
-
-    def compute_locality_score(self, attention_matrix, context_boundaries):
-        if attention_matrix is None:
-            return self._handle_missing_data(None, 0.0)
-        try:
-            intra_attention = 0.0
-            total_attention = 0.0
-            for start, end in context_boundaries:
-                if start >= attention_matrix.shape[0] or end > attention_matrix.shape[1]:
-                    continue
-                block = attention_matrix[start:end, start:end]
-                intra_attention += np.sum(block)
-                total_attention += np.sum(attention_matrix[start:end, :])
-            return intra_attention / (total_attention + 1e-8)
-        except:
-            return self._handle_missing_data(None, 0.0)
-
-    def compute_cross_example_attention(self, attention_matrix, context_boundaries):
-        if attention_matrix is None:
-            return self._handle_missing_data(None, 0.0)
-        try:
-            cross_attention = 0.0
-            total_attention = 0.0
-            for i, (start1, end1) in enumerate(context_boundaries):
-                if start1 >= attention_matrix.shape[0] or end1 > attention_matrix.shape[1]:
-                    continue
-                for j, (start2, end2) in enumerate(context_boundaries):
-                    if i != j and start2 < attention_matrix.shape[1] and end2 <= attention_matrix.shape[1]:
-                        cross_attention += np.sum(attention_matrix[start1:end1, start2:end2])
-                total_attention += np.sum(attention_matrix[start1:end1, :])
-            return cross_attention / (total_attention + 1e-8)
-        except:
-            return self._handle_missing_data(None, 0.0)
-
-    def compute_icl_patterns(self, attention_matrix, context_boundaries, query_position):
-        if attention_matrix is None:
-            return {
-                "context_to_query": self._handle_missing_data(None, 0.0),
-                "query_to_context": self._handle_missing_data(None, 0.0),
-            }
-        if query_position is None or not context_boundaries:
-            return {"context_to_query": 0.0, "query_to_context": 0.0}
-        try:
-            context_to_query = sum(
-                np.sum(attention_matrix[query_position, start:end])
-                for start, end in context_boundaries
-                if start < attention_matrix.shape[1] and end <= attention_matrix.shape[1]
-            )
-            query_to_context = 0.0
-            for start, end in context_boundaries:
-                if query_position < start < attention_matrix.shape[0] and end <= attention_matrix.shape[0]:
-                    query_to_context += np.sum(attention_matrix[start:end, query_position])
-            return {"context_to_query": context_to_query, "query_to_context": query_to_context}
-        except:
-            return {
-                "context_to_query": self._handle_missing_data(None, 0.0),
-                "query_to_context": self._handle_missing_data(None, 0.0),
-            }
-
-    def extract_head_features_streaming(self, files_data, sequence_metadata):
-        """Generator that yields features per head, per sequence"""
-        for seq_id, seq_attention in files_data.items():
-            context_boundaries = sequence_metadata[seq_id]["context_boundaries"]
-            query_position = sequence_metadata[seq_id]["query_position"]
-            rule_complexity = sequence_metadata[seq_id]["rule_complexity"]
-
-            for layer_idx in range(self.n_layers):
-                for head_idx in range(self.n_heads):
-                    attention_matrix = seq_attention.get(layer_idx, {}).get(head_idx, None)
-
-                    entropy_score = self.compute_attention_entropy(attention_matrix)
-                    locality_score = self.compute_locality_score(attention_matrix, context_boundaries)
-                    cross_score = self.compute_cross_example_attention(attention_matrix, context_boundaries)
-                    icl_patterns = self.compute_icl_patterns(attention_matrix, context_boundaries, query_position)
-
-                    feature_vector = [
-                        entropy_score,
-                        locality_score,
-                        cross_score,
-                        icl_patterns["context_to_query"],
-                        icl_patterns["query_to_context"],
-                        rule_complexity,
-                        layer_idx,
-                        head_idx,
-                    ]
-
-                    if self.missing_data_strategy == "skip" and any(f is None for f in feature_vector[:5]):
-                        continue
-
-                    yield np.array(feature_vector, dtype=np.float32), (seq_id, layer_idx, head_idx)
-                    # Discard matrix
-                    del attention_matrix
-
-
-class Phase1AnalysisPipeline:
-    """Phase-1 pipeline: batch feature extraction, clustering, and layer specialization mapping"""
-
-    def __init__(self, n_layers=6, n_heads=8, n_clusters=4, missing_data_strategy="skip", batch_size=50):
-        self.n_layers = n_layers
-        self.n_heads = n_heads
-        self.extractor = AttentionPatternExtractorStreaming(n_layers, n_heads, missing_data_strategy)
-        self.batch_size = batch_size
-        self.n_clusters = n_clusters
-
-    def extract_features_from_batches(self, batch_generator):
-        """Streaming feature extraction and incremental clustering"""
-        all_features = []
-        all_head_ids = []
-        all_sequence_metadata = {}
-
-        for files_data, seq_meta in batch_generator:
-            all_sequence_metadata.update(seq_meta)
-
-            for feature_vector, head_id in self.extractor.extract_head_features_streaming(files_data, seq_meta):
-                all_features.append(feature_vector)
-                all_head_ids.append(head_id)
-
-            # Clean up
-            del files_data, seq_meta
-
-        if all_features:
-            features_array = np.stack(all_features)
-        else:
-            features_array = np.zeros((0, 8), dtype=np.float32)
-
-        return features_array, all_head_ids, all_sequence_metadata
-
-    def cluster_heads(self, features_array):
-        """Cluster heads based on attention features only (exclude layer/head indices)"""
-        if features_array.shape[0] == 0:
-            return np.array([]), None
-
-        # Use only behavioral features (first 6 columns)
-        clustering_features = features_array[:, :6]
-        scaler = StandardScaler()
-        clustering_features_scaled = scaler.fit_transform(clustering_features)
-
-        clusterer = MiniBatchKMeans(n_clusters=self.n_clusters, batch_size=self.batch_size)
-        cluster_labels = clusterer.fit_predict(clustering_features_scaled)
-
-        return cluster_labels, clusterer
-
-    def compute_layer_specialization(self, features_array, head_identifiers, cluster_labels):
-        """Map cluster labels to layers and compute mean features per cluster per layer"""
-        layer_cluster_map = defaultdict(lambda: defaultdict(list))
-
-        for i, (seq_id, layer_idx, head_idx) in enumerate(head_identifiers):
-            cluster = cluster_labels[i]
-            layer_cluster_map[layer_idx][cluster].append(i)
-
-        layer_specialization = {}
-        for layer_idx, cluster_dict in layer_cluster_map.items():
-            layer_specialization[layer_idx] = {}
-            for cluster_label, head_indices in cluster_dict.items():
-                mean_vector = np.mean(features_array[head_indices, :6], axis=0)
-                layer_specialization[layer_idx][cluster_label] = mean_vector
-
-        return layer_specialization
-
-    def run_pipeline(self, batch_generator):
-        # Step 1: extract features
-        features_array, head_identifiers, sequence_metadata = self.extract_features_from_batches(batch_generator)
-
-        # Step 2: cluster heads
-        cluster_labels, clusterer_model = self.cluster_heads(features_array)
-
-        # Step 3: layer specialization mapping
-        if len(features_array) > 0:
-            layer_specialization = self.compute_layer_specialization(features_array, head_identifiers, cluster_labels)
-        else:
-            layer_specialization = {}
-
-        return {
-            "features_array": features_array,
-            "head_identifiers": head_identifiers,
-            "sequence_metadata": sequence_metadata,
-            "cluster_labels": cluster_labels,
-            "clusterer_model": clusterer_model,
-            "layer_specialization": layer_specialization,
-        }
-
-
-########################################
-# compute stat
-########################################
-
-
-class Phase1Stat:
-    """Phase-1 analysis: compute mandatory stats for attention heads.
-    Features must match head_identifiers.
-    """
-
-    def __init__(self, features_array, head_identifiers, sequence_metadata):
-        self.features_array = features_array  # shape: [num_heads, num_features]
-        self.head_identifiers = head_identifiers  # list of (seq_id, layer_idx, head_idx)
-        self.sequence_metadata = sequence_metadata
-
-    # -----------------------------------
-    # Main entry
-    # -----------------------------------
-    def run_phase1(self, clusters):
-        print("Computing Layer Specialization...")
-        layer_stats = self.compute_layer_specialization(clusters)
-
-        print("Computing Complexity Trends...")
-        complexity_stats = self.compute_complexity_trends(clusters)
-
-        print("Computing Cluster-Layer Enrichment...")
-        cluster_layer_stats = self.compute_cluster_layer_enrichment(clusters)
-
-        print("Computing Cluster-Performance Mapping...")
-        cluster_perf_stats = self.compute_cluster_performance(clusters)
-
-        return {
-            "layer_specialization": layer_stats,
-            "complexity_trends": complexity_stats,
-            "cluster_layer_enrichment": cluster_layer_stats,
-            "cluster_performance": cluster_perf_stats,
-        }
-
-    # -----------------------------------
-    # Layer specialization stats
-    # -----------------------------------
-    def compute_layer_specialization(self, clusters):
-        """Compute mean attention features per layer and cluster.
-        Only use actual feature dimensions (exclude layer/head indices)
-        Returns dict: layer_idx -> cluster -> mean_feature_vector
+    def extract(self, seq_data_batch, seq_meta_batch):
+        """Extract features from a batch of sequences.
+        seq_data_batch: dict[seq_id][layer][head] = attention matrix
+        seq_meta_batch: dict[seq_id] = metadata
         """
-        layer_cluster_features = defaultdict(lambda: defaultdict(list))
-        for head_idx, (seq_id, layer_idx, head_id) in enumerate(self.head_identifiers):
-            cluster_label = clusters[head_idx]
-            # slice features to exclude last two columns (layer_idx, head_idx)
-            feat_vector = self.features_array[head_idx, :6]  # adjust if you add/remove features
-            layer_cluster_features[layer_idx][cluster_label].append(feat_vector)
+        batch_features = []
 
-        # Compute mean vectors
-        layer_stats = {}
-        for layer_idx, cluster_dict in layer_cluster_features.items():
-            layer_stats[layer_idx] = {}
-            for cluster_label, feats in cluster_dict.items():
-                layer_stats[layer_idx][cluster_label] = np.mean(feats, axis=0)
-        return layer_stats
+        for seq_id, layer_dict in seq_data_batch.items():
+            meta = seq_meta_batch[seq_id]
+            for layer, head_dict in layer_dict.items():
+                for head, attn_matrix in head_dict.items():
+                    features = self._compute_features(attn_matrix, meta, layer, head)
+                    batch_features.append(features)
 
-    # -----------------------------------
-    # Complexity trends: n_shots
-    # -----------------------------------
-    def compute_complexity_trends(self, clusters):
-        cluster_trends = defaultdict(dict)
-        for cluster_label in np.unique(clusters):
-            feats = []
-            n_shots = []
-            for head_idx, (seq_id, layer_idx, head_id) in enumerate(self.head_identifiers):
-                if clusters[head_idx] != cluster_label:
-                    continue
-                feats.append(self.features_array[head_idx, 0])  # primary feature (entropy)
-                n_shots.append(self.sequence_metadata[seq_id]["n_shots"])
-            if len(feats) > 1:
-                slope = np.polyfit(n_shots, feats, 1)[0]
-                rho, _ = spearmanr(n_shots, feats)
-                low_feats = [f for f, n in zip(feats, n_shots, strict=False) if n <= np.median(n_shots)]
-                high_feats = [f for f, n in zip(feats, n_shots, strict=False) if n > np.median(n_shots)]
-                effect_size = (np.mean(high_feats) - np.mean(low_feats)) / np.sqrt(
-                    0.5 * (np.var(high_feats) + np.var(low_feats) + 1e-8)
-                )
-                cluster_trends[cluster_label] = {"slope": slope, "spearman_r": rho, "effect_size": effect_size}
-        return cluster_trends
+        # Accumulate globally
+        self.global_features.extend(batch_features)
+        return batch_features
 
-    # -----------------------------------
-    # Cluster-Layer enrichment
-    # -----------------------------------
-    def compute_cluster_layer_enrichment(self, clusters):
-        enrichment = defaultdict(lambda: defaultdict(int))
-        for head_idx, (seq_id, layer_idx, head_id) in enumerate(self.head_identifiers):
-            cluster_label = clusters[head_idx]
-            enrichment[layer_idx][cluster_label] += 1
-        return enrichment
+    def _compute_features(self, attn_matrix, meta, layer, head):
+        """Compute basic attention features for a single head."""
+        return {
+            "seq_id": meta["step"],
+            "layer": layer,
+            "head": head,
+            "n_shots": meta["n_shots"],
+            "entropy": self._attention_entropy(attn_matrix),
+            "locality": self._locality_score(attn_matrix, meta["context_boundaries"]),
+            "cross_attention": self._cross_attention(attn_matrix, meta["context_boundaries"]),
+            "query_to_context": self._query_to_context(attn_matrix, meta["context_boundaries"], meta["query_position"]),
+        }
 
-    # -----------------------------------
-    # Cluster-performance mapping
-    # -----------------------------------
-    def compute_cluster_performance(self, clusters):
-        cluster_perf = defaultdict(lambda: defaultdict(list))
-        for head_idx, (seq_id, layer_idx, head_id) in enumerate(self.head_identifiers):
-            cluster_label = clusters[head_idx]
-            # use outcome from metadata if available, fallback to "unknown"
-            outcome = self.sequence_metadata[seq_id].get("outcome", "unknown")
-            cluster_perf[cluster_label][outcome].append(self.features_array[head_idx])
-        return cluster_perf
+    def _attention_entropy(self, attn):
+        # compute entropy row-wise
+        ent = entropy(attn + 1e-12, base=np.e, axis=-1)  # add small eps
+        return float(ent.mean())
+
+    def _locality_score(self, attn, context_boundaries):
+        intra, total = 0.0, 0.0
+        for start, end in context_boundaries:
+            if start >= attn.shape[0] or end > attn.shape[1]:
+                continue
+            block = attn[start:end, start:end]
+            intra += block.sum()
+            total += attn[start:end, :].sum()
+        return float(intra / (total + 1e-8))
+
+    def _cross_attention(self, attn, context_boundaries):
+        cross, total = 0.0, 0.0
+        for i, (s1, e1) in enumerate(context_boundaries):
+            for j, (s2, e2) in enumerate(context_boundaries):
+                if i != j and s2 < attn.shape[1] and e2 <= attn.shape[1]:
+                    cross += attn[s1:e1, s2:e2].sum()
+            total += attn[s1:e1, :].sum()
+        return float(cross / (total + 1e-8))
+
+    def _query_to_context(self, attn, context_boundaries, query_pos):
+        total = 0.0
+        for start, end in context_boundaries:
+            if start < attn.shape[0] and end <= attn.shape[1]:
+                total += attn[start:end, query_pos].sum()
+        return float(total)
+
+    def get_all_features(self):
+        return self.global_features
+
+
+########################################
+# compute global stat
+########################################
+
+
+class PreClusteringAnalyzer:
+    """Compute aggregated statistics BEFORE clustering."""
+
+    def __init__(self):
+        self.summary_stats = {}
+
+    def run(self, features, seq_meta_batch=None):
+        entropies = [f["entropy"] for f in features]
+        localities = [f["locality"] for f in features]
+        cross_attn = [f["cross_attention"] for f in features]
+        query2ctx = [f["query_to_context"] for f in features]
+
+        self.summary_stats = {
+            "entropy_mean": np.mean(entropies),
+            "entropy_std": np.std(entropies),
+            "locality_mean": np.mean(localities),
+            "cross_attention_mean": np.mean(cross_attn),
+            "query2ctx_mean": np.mean(query2ctx),
+            "total_heads": len(features),
+        }
+        return self.summary_stats
+
+    def get_summary(self):
+        return self.summary_stats
+
+
+########################################
+# clustering module
+########################################
+
+
+class ClusteringModule:
+    """Cluster heads based on extracted attention features."""
+
+    def __init__(self, n_clusters=4):
+        self.n_clusters = n_clusters
+        self.cluster_labels = None
+        self.cluster_centers = None
+
+    def run(self, features):
+        # Use behavioral features only
+        X = np.array([[f["entropy"], f["locality"], f["cross_attention"], f["query_to_context"]] for f in features])
+        X_scaled = StandardScaler().fit_transform(X)
+
+        kmeans = KMeans(n_clusters=self.n_clusters, random_state=42)
+        self.cluster_labels = kmeans.fit_predict(X_scaled)
+        self.cluster_centers = kmeans.cluster_centers_
+        return self.cluster_labels, self.cluster_centers
+
+
+########################################
+# compute stat after clustering
+########################################
+
+
+class PostClusteringAnalyzer:
+    """Compute cluster-level statistics after clustering."""
+
+    def __init__(self):
+        self.cluster_summary = {}
+
+    def run(self, features, cluster_labels):
+        cluster_map = defaultdict(list)
+        for label, f in zip(cluster_labels, features, strict=False):
+            cluster_map[label].append(f)
+
+        self.cluster_summary = {
+            c: {
+                "size": len(flist),
+                "entropy_mean": np.mean([f["entropy"] for f in flist]),
+                "locality_mean": np.mean([f["locality"] for f in flist]),
+                "cross_attention_mean": np.mean([f["cross_attention"] for f in flist]),
+                "query2ctx_mean": np.mean([f["query_to_context"] for f in flist]),
+            }
+            for c, flist in cluster_map.items()
+        }
+        return self.cluster_summary
+
+    def get_summary(self):
+        return self.cluster_summary
+
+
+########################################
+# Layer-Level Stat & Specialization Score
+########################################
+
+
+class LayerStatsAnalyzer:
+    """Compute per-layer statistics, specialization scores, and inter-layer comparisons."""
+
+    def __init__(self, n_layers, n_heads):
+        self.n_layers = n_layers
+        self.n_heads = n_heads
+        self.layer_stats = {}  # Per-layer feature stats
+        self.specialization_scores = {}  # Variance-based scores
+
+    def run(self, features):
+        """Compute per-layer statistics and specialization scores.
+        features: list of dicts, each containing 'layer', 'head', and behavioral features
+        """
+        # --- 1. Aggregate features per layer ---
+        layer_map = defaultdict(list)
+        for f in features:
+            layer_map[f["layer"]].append([f["entropy"], f["locality"], f["cross_attention"], f["query_to_context"]])
+
+        self.layer_stats = {}
+        for layer, feats in layer_map.items():
+            feats_arr = np.array(feats)
+            self.layer_stats[layer] = {
+                "mean": np.mean(feats_arr, axis=0),
+                "std": np.std(feats_arr, axis=0),
+                "min": np.min(feats_arr, axis=0),
+                "max": np.max(feats_arr, axis=0),
+            }
+
+        # --- 2. Compute specialization score ---
+        # Normalized variance across features: higher = more specialized
+        all_means = np.stack([v["mean"] for v in self.layer_stats.values()])
+        feature_variances = np.var(all_means, axis=0)
+        norm_var = feature_variances / (np.sum(feature_variances) + 1e-8)
+
+        for idx, layer in enumerate(sorted(self.layer_stats.keys())):
+            self.specialization_scores[layer] = float(np.sum((all_means[idx] - np.mean(all_means, axis=0)) ** 2))
+
+        return self.layer_stats, self.specialization_scores
+
+    def get_layer_stats(self):
+        return self.layer_stats
+
+    def get_specialization_scores(self):
+        return self.specialization_scores
+
+
+########################################
+# Inter-Layer Comparative Metrics
+########################################
+
+
+class InterLayerAnalyzer:
+    """Compare layers using correlation and functional diversity metrics."""
+
+    def __init__(self):
+        self.layer_correlations = {}
+        self.functional_diversity = {}
+
+    def run(self, features, cluster_labels=None):
+        """features: list of dicts
+        cluster_labels: optional, used to compute fraction of heads with extreme behavior
+        """
+        # --- 1. Build layer-feature map ---
+        layer_map = defaultdict(list)
+        for idx, f in enumerate(features):
+            feats = [f["entropy"], f["locality"], f["cross_attention"], f["query_to_context"]]
+            layer_map[f["layer"]].append(feats)
+
+        # --- 2. Compute pairwise correlations ---
+        self.layer_correlations = {}
+        layers = sorted(layer_map.keys())
+        for l1, l2 in combinations(layers, 2):
+            feats1 = np.mean(np.array(layer_map[l1]), axis=0)
+            feats2 = np.mean(np.array(layer_map[l2]), axis=0)
+            # Pearson correlation
+            corr = np.mean([pearsonr(feats1, feats2)[0]])
+            self.layer_correlations[f"{l1}_{l2}"] = float(corr)
+
+        # --- 3. Functional diversity (optional) ---
+        if cluster_labels is not None:
+            self.functional_diversity = defaultdict(float)
+            for idx, f in enumerate(features):
+                layer = f["layer"]
+                self.functional_diversity[layer] += 1  # count heads per layer
+            total_heads = len(features)
+            for layer in self.functional_diversity:
+                self.functional_diversity[layer] /= total_heads
+
+        return self.layer_correlations, self.functional_diversity
