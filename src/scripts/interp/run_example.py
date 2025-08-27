@@ -25,6 +25,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=str, choices=["last", "clm", "mlm"], default="clm", help="model type")
     parser.add_argument("--seed_num", type=int, default=1000, help="model type")
     parser.add_argument("--n_clusters", type=int, default=3, help="model type")
+    parser.add_argument(
+        "--task",
+        type=str,
+        choices=["memorization", "id_generalization", "ood_same_rule", "ood_transfer"],
+        default="memorization",
+        help="model type",
+    )
     parser.add_argument("--max_shots", type=int, default=None, help="model type")
     parser.add_argument("--max_seq", type=int, default=None, help="model type")
     return parser.parse_args()
@@ -94,6 +101,7 @@ def extract_stat(data_dir: Path, n_clusters: int, max_shots=None, max_sequences=
             "inter_layer_corr": corr,
             "inter_layer_div": diversity,
             "cluster_labels": cluster_labels.tolist() if cluster_labels is not None else [],
+            "post_summary": post_summary,
             "features": features,
         }
     }
@@ -108,24 +116,20 @@ def main() -> None:
     output_file = PATH.interp_dir / prefix / "layer"
     output_file.mkdir(parents=True, exist_ok=True)
     # configure save_dir
-    eval_type_lst = ["memorization", "id_generalization", "ood_same_rule", "ood_transfer"]
+    data_dir = PATH.result_dir / prefix / args.task / suffix
+    # loop over different steps
     result_dict = {}
-    for eval_type in eval_type_lst:
-        try:
-            data_dir = PATH.result_dir / prefix / eval_type / suffix
-            # loop over different steps
-            for step_dir in data_dir.iterdir():
-                phase1_json = extract_stat(
-                    step_dir,
-                    n_clusters=args.n_clusters,
-                    max_shots=args.max_shots,
-                    max_sequences=args.max_seq,
-                )
-                result_dict.update(phase1_json)
-                JsonProcessor.save_json(result_dict, output_file / f"{eval_type}.json")
-                logger.info(f"Save the rest to: {output_file}/{eval_type}.json")
-        except:
-            logger.info(f"Something wrong with {eval_type}")
+    for step_dir in data_dir.iterdir():
+        logger.info(f"Loading file from {step_dir}")
+        phase1_json = extract_stat(
+            step_dir,
+            n_clusters=args.n_clusters,
+            max_shots=args.max_shots,
+            max_sequences=args.max_seq,
+        )
+        result_dict.update(phase1_json)
+        JsonProcessor.save_json(result_dict, output_file / f"{args.task}.json")
+        logger.info(f"Save the rest to: {output_file}/{args.task}.json")
 
 
 if __name__ == "__main__":

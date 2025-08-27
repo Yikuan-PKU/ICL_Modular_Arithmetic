@@ -124,6 +124,7 @@ class AttentionDataLoaderBatch:
                     "query_position": self.compute_query_position(n_shots),
                     "rule_complexity": self.infer_rule_complexity(n_shots),
                     "step": step,
+                    "seq_id": seq_id,
                 }
                 seen_sequences.add(seq_id)
 
@@ -172,7 +173,8 @@ class FeatureExtractor:
     def _compute_features(self, attn_matrix, meta, layer, head):
         """Compute basic attention features for a single head."""
         return {
-            "seq_id": meta["step"],
+            "step": meta["step"],
+            "seq_id": meta["seq_id"],
             "layer": layer,
             "head": head,
             "n_shots": meta["n_shots"],
