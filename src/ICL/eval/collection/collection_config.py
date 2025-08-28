@@ -42,6 +42,8 @@ class CollectionConfig:
     config_m: int
     model_type: str
 
+    # whether to resume from existing file
+    resume: bool = True
     # Mode selection
     model_variant: str | None = None
     eval_type: str | None = None

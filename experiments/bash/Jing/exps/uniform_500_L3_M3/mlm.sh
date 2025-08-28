@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=mlm500_L3_M3
 #SBATCH --export=ALL
-#SBATCH --partition=gpu
+#SBATCH --partition=erc-cristia
 #SBATCH --gres=gpu:1
-#SBATCH --mem=160G
-#SBATCH --cpus-per-task=8
+#SBATCH --mem=80G
+#SBATCH --cpus-per-task=1
 #SBATCH --time=14:00:00
 #SBATCH --output=/scratch2/jliu/ICL/logs/model_pipeline/mlm_uniform_500_L3_M3_eval.log
 

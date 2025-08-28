@@ -33,8 +33,13 @@ class CollectionEvaluator:
 
     def run_comprehensive_collection(self) -> dict:
         """Simplified collection pipeline with memory management."""
-        logger.info("Starting collection...")
+        # check whether the target file already exsits
+        exist_file, results_path = self._check_existence()
+        if self.config.resume and exist_file:
+            logger.info(f"Exist {results_path}. Skip!")
+            return None
 
+        logger.info("Starting collection...")
         # Load dataset in chunks
         eval_dataset = self._load_evaluation_dataset()
 
@@ -213,6 +218,12 @@ class CollectionEvaluator:
             # Just return original for simplicity
             return sequence
         return sequence
+
+    def _check_existence(self) -> dict:
+        """Simple result saving."""
+        self.config.create_output_structure()
+        results_path = self.config.output_dir / "raw_evaluations" / "icl_performance.parquet"
+        return results_path.exists(), results_path
 
     def _save_results(self) -> dict:
         """Simple result saving."""

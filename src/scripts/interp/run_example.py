@@ -30,10 +30,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         choices=["memorization", "id_generalization", "ood_same_rule", "ood_transfer"],
         default="memorization",
-        help="model type",
+        help="task type",
     )
     parser.add_argument("--max_shots", type=int, default=None, help="model type")
     parser.add_argument("--max_seq", type=int, default=None, help="model type")
+    parser.add_argument("--step", type=str, default=None, help="model type")
+    parser.add_argument("--resume", action="store_true", help="Resume from existing output file if available.")
     return parser.parse_args()
 
 
@@ -72,19 +74,20 @@ def extract_stat(data_dir: Path, n_clusters: int, max_shots=None, max_sequences=
     # print("Specialization scores:", spec_scores)
 
     # --- Clustering ---
-    cluster_labels, _ = clustering_module.run(features)
+    # cluster_labels, _ = clustering_module.run(features)
     # print("[INFO] Clustering done.")
 
     # --- Post-clustering analysis ---
-    post_summary = post_analyzer.run(features, cluster_labels)
+    # post_summary = post_analyzer.run(features, cluster_labels)
     # print("Post-clustering summary:", post_summary)
 
     # --- Inter-layer comparison ---
-    corr, diversity = inter_layer_analyzer.run(features, cluster_labels)
+    # corr, diversity = inter_layer_analyzer.run(features, cluster_labels)
     # print("Inter-layer correlations:", corr)
     # print("Functional diversity:", diversity)
 
     step = seq_meta_batch[0]["step"]
+
     phase1_json = {
         step: {
             "metadata": {
@@ -98,13 +101,30 @@ def extract_stat(data_dir: Path, n_clusters: int, max_shots=None, max_sequences=
             },
             "layer_stats": layer_stats,
             "layer_spec": spec_scores,
-            "inter_layer_corr": corr,
-            "inter_layer_div": diversity,
-            "cluster_labels": cluster_labels.tolist() if cluster_labels is not None else [],
-            "post_summary": post_summary,
             "features": features,
         }
     }
+
+    # phase1_json = {
+    #     step: {
+    #         "metadata": {
+    #             "num_layers": n_layers,
+    #             "num_heads": n_heads,
+    #             "num_sequences": max_sequences,
+    #             "n_clusters": n_clusters,
+    #             "batch_size": batch_size,
+    #             "max_shots": max_shots,
+    #             "max_sequences": max_sequences,
+    #         },
+    #         "layer_stats": layer_stats,
+    #         "layer_spec": spec_scores,
+    #         "inter_layer_corr": corr,
+    #         "inter_layer_div": diversity,
+    #         "cluster_labels": cluster_labels.tolist() if cluster_labels is not None else [],
+    #         "post_summary": post_summary,
+    #         "features": features,
+    #     }
+    # }
     return phase1_json
 
 
@@ -113,23 +133,33 @@ def main() -> None:
     args = parse_args()
     prefix = f"uniform_{args.seed_num}_L3_M3/{args.model}_noshuffle_seedbalanced"
     suffix = "collection/raw_evaluations/attention_data"
-    output_file = PATH.interp_dir / prefix / "layer"
-    output_file.mkdir(parents=True, exist_ok=True)
+    output_file = PATH.interp_dir / prefix / "layer" / f"{args.task}.json"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     # configure save_dir
     data_dir = PATH.result_dir / prefix / args.task / suffix
-    # loop over different steps
-    result_dict = {}
-    for step_dir in data_dir.iterdir():
-        logger.info(f"Loading file from {step_dir}")
-        phase1_json = extract_stat(
-            step_dir,
-            n_clusters=args.n_clusters,
-            max_shots=args.max_shots,
-            max_sequences=args.max_seq,
-        )
-        result_dict.update(phase1_json)
-        JsonProcessor.save_json(result_dict, output_file / f"{args.task}.json")
-        logger.info(f"Save the rest to: {output_file}/{args.task}.json")
+    if args.resume and output_file.exists():
+        logger.info(f"Reume mode and file exists: {output_file}")
+        exit()
+
+    if data_dir.exists():
+        # loop over different steps
+        result_dict = {}
+        for step_dir in data_dir.iterdir():
+            # try:
+            logger.info(f"Loading file from: {step_dir}")
+            phase1_json = extract_stat(
+                step_dir,
+                n_clusters=args.n_clusters,
+                max_shots=args.max_shots,
+                max_sequences=args.max_seq,
+            )
+            result_dict.update(phase1_json)
+            JsonProcessor.save_json(result_dict, output_file)
+            logger.info(f"Save the rest to: {output_file}/{args.task}.json")
+    # except:
+    #     logger.info(f"Fail to extract stat from: {step_dir}")
+    else:
+        logger.info(f"Does NOT exist: {data_dir}")
 
 
 if __name__ == "__main__":

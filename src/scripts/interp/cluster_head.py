@@ -1,12 +1,41 @@
-import json
+import argparse
+import logging
 
-import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.decomposition import PCA
 
 from ICL.interp.extract import (
     ClusteringModule,
 )
+from ICL.load_util import JsonProcessor
+from ICL.settings import PATH
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Seach neuron groups across different training steps.")
+    parser.add_argument("--model", type=str, choices=["last", "clm", "mlm"], default="clm", help="model type")
+    parser.add_argument("--seed_num", type=int, default=1000, help="model type")
+    parser.add_argument("--n_clusters", type=int, default=3, help="model type")
+    parser.add_argument(
+        "--task",
+        type=str,
+        choices=["memorization", "id_generalization", "ood_same_rule", "ood_transfer"],
+        default="memorization",
+        help="task type",
+    )
+    parser.add_argument("--max_shots", type=int, default=None, help="model type")
+    parser.add_argument("--max_seq", type=int, default=None, help="model type")
+    return parser.parse_args()
+
+
+# ========================
+# Phase-1: select layers
+# ========================
 
 
 def cluster_selected_layers(all_features, layer_spec_scores, selected_metric="memorization", n_clusters=4):
@@ -73,7 +102,7 @@ def cluster_selected_layers(all_features, layer_spec_scores, selected_metric="me
 
     # 8. Return everything in a dict (ready to save as JSON)
     result_dict = {"selected_layers": top_layers, "cluster_labels": cluster_labels, "cluster_stats": cluster_stats}
-    return result_dict
+    return result_dict, top_layers
 
 
 # ========================
@@ -120,41 +149,32 @@ def run_pca(feature_matrix, n_components=2):
     return pca_features, pca_model
 
 
-def visualize_pca(pca_features, head_map, cluster_labels=None, title="PCA of Selected Heads"):
-    """Simple scatter plot of PCA results."""
-    plt.figure(figsize=(8, 6))
-    colors = None
-    if cluster_labels is not None:
-        colors = []
-        for seq_id, layer, head_idx in head_map:
-            colors.append(cluster_labels.get(layer, {}).get(head_idx, -1))
-    plt.scatter(pca_features[:, 0], pca_features[:, 1], c=colors, cmap="tab10", alpha=0.7)
-    plt.xlabel("PCA Component 1")
-    plt.ylabel("PCA Component 2")
-    plt.title(title)
-    plt.colorbar(label="Cluster Label")
-    plt.show()
-
-
 # ========================
 # Example Usage
 # ========================
 
+
+def main():
+    args = parse_args()
+    prefix = f"uniform_{args.seed_num}_L3_M3/{args.model}_noshuffle_seedbalanced"
+    data_dir = PATH.interp_dir / prefix / "layer" / f"{args.task}.json"
+    cluster_dir = PATH.interp_dir / prefix / "cluster" / f"{args.task}.json"
+    if data_dir.exists():
+        step_dict = JsonProcessor.load_json(data_dir)
+        # loop over different steps
+        for step, subdict in step_dict.items():
+            all_features = subdict["features"]
+            layer_spec_scores = subdict["layer_spec"]
+            cluster_dict, selected_layers = cluster_selected_layers(
+                all_features, layer_spec_scores, selected_metric=args.task, n_clusters=args.n_clusters
+            )
+            JsonProcessor.save_json(cluster_dict, cluster_dir)
+            logger.info(f"Save the cluster result to: {cluster_dir}")
+            feature_matrix, head_map = extract_head_features(all_features, selected_layers)
+            pca_features, pca_model = run_pca(feature_matrix, n_components=2)
+    else:
+        logger.info(f"Does NOT exist: {data_dir}")
+
+
 if __name__ == "__main__":
-    # Load Phase-1 outputs
-    with open("selected_layer_clusters.json") as f:
-        phase1_data = json.load(f)
-
-    selected_layers = phase1_data["selected_layers"]
-    cluster_labels = phase1_data["cluster_labels"]
-    # Suppose all_features comes from FeatureExtractor
-    all_features = ...  # seq_id -> layer -> head -> feature vector
-
-    # Extract features for selected layers
-    feature_matrix, head_map = extract_head_features(all_features, selected_layers)
-
-    # Run PCA
-    pca_features, pca_model = run_pca(feature_matrix, n_components=2)
-
-    # Visualize PCA with cluster labels
-    visualize_pca(pca_features, head_map, cluster_labels)
+    main()

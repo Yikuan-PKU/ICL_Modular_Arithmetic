@@ -10,17 +10,17 @@ collection_config:
   # Execution parameters (original + new memory management)
   execution_parameters:
     # Basic execution settings
-    batch_size: 32
-    max_sequences_per_condition: 200
+    batch_size: 8
+    max_sequences_per_condition: 32
     capture_attention: true
     
     # Memory management settings (NEW)
-    sequence_chunk_size: 50          # Process sequences in chunks to save memory
+    sequence_chunk_size: 8         # Process sequences in chunks to save memory
     offload_models: false            # Move models to CPU between evaluations (useful for batch mode)
     
     # Attention capture settings (NEW)
     selective_attention: "all"       # Options: "all", "last", "first", "middle"
     attention_layers: null           # Specific layers: [0, 5, 11] or null for all
     attention_heads: null            # Specific heads: [0, 1, 7] or null for all  
-    attention_sampling_rate: 0.1     # Fraction of sequences to capture attention (0.0-1.0)
+    attention_sampling_rate: 1.0     # Fraction of sequences to capture attention (0.0-1.0)
 

@@ -4,7 +4,7 @@
 #SBATCH --partition=erc-cristia
 #SBATCH --gres=gpu:1
 #SBATCH --mem=80G
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=1
 #SBATCH --time=14:00:00
 #SBATCH --output=/scratch2/jliu/ICL/logs/model_pipeline/clm_uniform_1000_L3_M3_eval.log
 
