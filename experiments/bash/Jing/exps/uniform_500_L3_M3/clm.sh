@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=clm500_L3_M3
 #SBATCH --export=ALL
-#SBATCH --partition=gpu
+#SBATCH --partition=erc-cristia
 #SBATCH --gres=gpu:1
-#SBATCH --mem=160G
-#SBATCH --cpus-per-task=10
-#SBATCH --time=10:00:00
+#SBATCH --mem=80G
+#SBATCH --cpus-per-task=1
+#SBATCH --time=14:00:00
 #SBATCH --output=/scratch2/jliu/ICL/logs/model_pipeline/clm_uniform_500_L3_M3_eval.log
 
 
@@ -20,7 +20,7 @@ M=3
 # Construct shared arguments (updated to match new argument structure)
 SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED --L $L --M $M"
 # Optional pipeline controls
-PIPELINE_ARGS="--verbose"
+PIPELINE_ARGS="--verbose --resume"
 
 # =============================================================================
 # Training model
@@ -43,7 +43,7 @@ PIPELINE_ARGS="--verbose"
 echo "============== Evaluating model =============="
 
 # Collection mode and pipeline controls (execution params come from YAML)
-MODE_ARGS="--batch-mode --verbose --overwrite"
+MODE_ARGS="--batch-mode --verbose"
 
 # Combine arguments (execution parameters loaded from YAML)
 ALL_ARGS="$SHARED_ARGS $MODE_ARGS"

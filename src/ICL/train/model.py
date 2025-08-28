@@ -80,8 +80,10 @@ class RHMTrainingConfig:
     greater_is_better: bool = False
 
     # Evaluation configuration - UPDATED for epoch-based evaluation
-    evaluation_strategy: str = "epoch"  # Changed from "steps" to "epoch"
-    eval_steps: int = 1  # Evaluate every epoch
+    evaluation_strategy: str = "epoch"  # "epoch" or "steps"
+    eval_steps: int = 1  # Steps interval when evaluation_strategy="steps", or epochs when "epoch"
+    eval_by_steps: bool = False  # NEW: If True, use steps-based evaluation
+    eval_steps_interval: int = 100  # NEW: Steps interval for evaluation
     eval_accumulation_steps: int | None = None
 
     # Logging configuration
@@ -112,9 +114,6 @@ class RHMTrainingConfig:
 
     # Dataset configuration
     dataset_path: str | None = None
-    train_split_ratio: float = 0.8
-    max_samples_per_seed: int | None = None  # Limit samples per seed
-
     # Hierarchical analysis
     track_hierarchical_metrics: bool = True
     hierarchical_eval_frequency: int = 1000
@@ -160,8 +159,30 @@ class RHMTrainingConfig:
 
         return "_".join(parts)
 
+    def get_model_suffix(self) -> str:
+        """Generate model name suffix with 'last' replacing task_name when last_token_prediction enabled."""
+        # FIXED: Use "last" instead of task_name when last_token_prediction is enabled
+        if self.last_token_prediction:
+            parts = ["last"]  # Replace "clm"/"mlm" with "last"
+        else:
+            parts = [self.task_name]  # Keep "clm" or "mlm"
+
+        # Add shuffling info
+        if self.shuffle_before_packing:
+            parts.append(f"{self.shuffle_strategy}shuffle")
+        else:
+            parts.append("noshuffle")
+
+        # Add seed batching info
+        if self.seed_balanced_batching:
+            parts.append(f"seed{self.seed_sampling_strategy}")
+        else:
+            parts.append("noseed")
+
+        return "_".join(parts)
+
     def to_training_arguments(self) -> TrainingArguments:
-        """Convert to HuggingFace TrainingArguments with flexible checkpointing."""
+        """Convert to HuggingFace TrainingArguments with flexible checkpointing and evaluation."""
         # Determine save strategy based on save_by_steps
         if self.save_by_steps:
             save_strategy = "steps"
@@ -169,6 +190,14 @@ class RHMTrainingConfig:
         else:
             save_strategy = "epoch"
             save_steps = 1
+
+        # NEW: Determine evaluation strategy based on eval_by_steps
+        if self.eval_by_steps:
+            evaluation_strategy = "steps"
+            eval_steps = self.eval_steps_interval
+        else:
+            evaluation_strategy = "epoch"
+            eval_steps = 1
 
         training_args_dict = {
             "output_dir": self.output_dir,
@@ -186,8 +215,8 @@ class RHMTrainingConfig:
             "lr_scheduler_type": self.lr_scheduler_type,
             "metric_for_best_model": self.metric_for_best_model,
             "greater_is_better": self.greater_is_better,
-            "evaluation_strategy": self.evaluation_strategy,
-            "eval_steps": self.eval_steps,
+            "evaluation_strategy": evaluation_strategy,  # UPDATED: Use conditional strategy
+            "eval_steps": eval_steps,  # UPDATED: Use conditional steps
             "eval_accumulation_steps": self.eval_accumulation_steps,
             "logging_strategy": self.logging_strategy,
             "logging_steps": self.logging_steps,
@@ -222,8 +251,8 @@ class RHMTrainingConfig:
                 "per_device_train_batch_size": self.per_device_train_batch_size,
                 "per_device_eval_batch_size": self.per_device_eval_batch_size,
                 "learning_rate": self.learning_rate,
-                "evaluation_strategy": self.evaluation_strategy,
-                "eval_steps": self.eval_steps,
+                "evaluation_strategy": evaluation_strategy,  # UPDATED
+                "eval_steps": eval_steps,  # UPDATED
                 "save_strategy": save_strategy,
                 "save_steps": save_steps,
                 "logging_steps": self.logging_steps,

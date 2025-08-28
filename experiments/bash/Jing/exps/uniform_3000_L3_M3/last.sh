@@ -1,18 +1,18 @@
 #!/bin/bash
-#SBATCH --job-name=mlm500_L3_M3
+#SBATCH --job-name=last3000_L3_M3
 #SBATCH --export=ALL
 #SBATCH --partition=erc-cristia
 #SBATCH --gres=gpu:1
 #SBATCH --mem=80G
-#SBATCH --cpus-per-task=1
-#SBATCH --time=14:00:00
-#SBATCH --output=/scratch2/jliu/ICL/logs/model_pipeline/mlm_uniform_500_L3_M3_eval.log
+#SBATCH --cpus-per-task=4
+#SBATCH --time=48:00:00
+#SBATCH --output=/scratch2/jliu/ICL/logs/model_pipeline/last_uniform_3000_L3_M3.log
 
 
 # Define experiment parameters using the new simplified structure
 DATASET_TYPE="uniform"
-MODEL_TYPE="mlm"
-NUM_SEEDS=500
+MODEL_TYPE="clm"
+NUM_SEEDS=3000
 SEED=42
 L=3
 M=3
@@ -27,27 +27,25 @@ PIPELINE_ARGS="--verbose --resume"
 # =============================================================================
 # echo "============== Training model =============="
 
-# SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/train"
-# # Step 1: Validate configuration (optional)
-# echo "Step 1: Validating training configuration..."
-# python $SCRIPT_ROOT/train.py $SHARED_ARGS --dry-run
+SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/train"
+# Step 1: Validate configuration (optional)
+echo "Step 1: Validating training configuration..."
+python $SCRIPT_ROOT/train.py $SHARED_ARGS --last-token-prediction --dry-run
 
-# # Step 2: Train model
-# echo "Step 2: Training model..."
-# python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS
+# Step 2: Train model
+echo "Step 2: Training model..."
+python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS --last-token-prediction
 
 
 # =============================================================================
 # Evaluating model
 # =============================================================================
 echo "============== Evaluating model =============="
-
 # Collection mode and pipeline controls (execution params come from YAML)
 MODE_ARGS="--batch-mode --verbose --overwrite"
 
 # Combine arguments (execution parameters loaded from YAML)
 ALL_ARGS="$SHARED_ARGS $MODE_ARGS"
-
 SCRIPT_ROOT="/scratch2/jliu/ICL/ICL_Modular_Arithmetic/src/scripts/eval"
 # Step 1: Discover available combinations using explicit L,M,MODEL_TYPE
 echo "Step 1: Discovering combinations using explicit L=$L, M=$M, MODEL_TYPE=$MODEL_TYPE..."

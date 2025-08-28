@@ -122,6 +122,8 @@ class CollectionCoordinator:
         }
 
         for variant, eval_type in combinations:
+            # check whether there is already the file
+
             logger.info(f"Processing {variant}/{eval_type}")
 
             # Log memory usage if CUDA available
@@ -135,6 +137,7 @@ class CollectionCoordinator:
 
                 # Run evaluation
                 evaluator = CollectionEvaluator(single_config)
+
                 results = evaluator.run_comprehensive_collection()
 
                 batch_results["completed"].append((variant, eval_type))

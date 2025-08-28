@@ -23,7 +23,7 @@ MODEL_TYPE="clm"  # EXPLICIT model type (clm or mlm)
 SHARED_ARGS="--dataset-type $DATASET_TYPE --num-seeds $NUM_SEEDS --seed $SEED --L $L --M $M --model-type $MODEL_TYPE"
 
 # Collection mode and pipeline controls (execution params come from YAML)
-MODE_ARGS="--batch-mode --verbose --overwrite"
+MODE_ARGS="--batch-mode --verbose"
 
 # Combine arguments (execution parameters loaded from YAML)
 ALL_ARGS="$SHARED_ARGS $MODE_ARGS"

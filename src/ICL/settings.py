@@ -64,6 +64,10 @@ class _MyPathSettings:
         return self.DATA_DIR / "results"
 
     @property
+    def interp_dir(self) -> _Path:
+        return self.DATA_DIR / "interp"
+
+    @property
     def conf_dir(self) -> _Path:
         """Flattened configuration directory."""
         return self.DATA_DIR / "ICL_Modular_Arithmetic" / "experiments" / "conf"

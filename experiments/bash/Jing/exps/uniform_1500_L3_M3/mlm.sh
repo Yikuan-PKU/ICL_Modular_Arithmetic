@@ -4,8 +4,8 @@
 #SBATCH --partition=erc-cristia
 #SBATCH --gres=gpu:1
 #SBATCH --mem=80G
-#SBATCH --cpus-per-task=10
-#SBATCH --time=10:00:00
+#SBATCH --cpus-per-task=1
+#SBATCH --time=14:00:00
 #SBATCH --output=/scratch2/jliu/ICL/logs/model_pipeline/mlm_uniform_1500_L3_M3_eval.log
 
 
@@ -20,7 +20,7 @@ M=3
 # Construct shared arguments (updated to match new argument structure)
 SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED --L $L --M $M"
 # Optional pipeline controls
-PIPELINE_ARGS="--verbose"
+PIPELINE_ARGS="--verbose --resume"
 
 # =============================================================================
 # Training model
