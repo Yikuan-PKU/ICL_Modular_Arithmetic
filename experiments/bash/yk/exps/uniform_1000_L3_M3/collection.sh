@@ -1,23 +1,23 @@
 #!/bin/bash
-#SBATCH -J RHM_uniform
-#SBATCH -p gpu_l40
+#SBATCH -J eval_clm
+#SBATCH -p gpu_4l
 #SBATCH -N 1
 #SBATCH -o RHM_%j.out
 #SBATCH -e RHM_%j.err
 #SBATCH --no-requeue
 #SBATCH -A qi_g1
-#SBATCH --qos=qil40
-#SBATCH --gres=gpu:2
+#SBATCH --qos=qig4c
+#SBATCH --gres=gpu:1
 #SBATCH --overcommit
 #SBATCH --mincpus=9
 
-
 source ~/lustre1/ykzhang/apps/python-3.11.11/venvICL/bin/activate
+
 
 # Define experiment parameters using the new simplified structure
 DATASET_TYPE="uniform"
-MODEL_TYPE="clm"
-NUM_SEEDS=2000
+MODEL_TYPE="last"
+NUM_SEEDS=1000
 SEED=42
 L=3
 M=3
@@ -25,31 +25,15 @@ M=3
 # Construct shared arguments (updated to match new argument structure)
 SHARED_ARGS="--dataset-type $DATASET_TYPE --model-type $MODEL_TYPE --num-seeds $NUM_SEEDS --seed $SEED --L $L --M $M"
 # Optional pipeline controls
-PIPELINE_ARGS="--verbose --resume"
+MODE_ARGS="--batch-mode --verbose --overwrite"
 
-# =============================================================================
-# Training model
-# =============================================================================
-echo "============== Training model =============="
-
-SCRIPT_ROOT="$HOME/lustre1/ykzhang/ICL_RHM/ICL_Modular_Arithmetic/src/scripts/train"
-echo "Step 1: Validating training configuration..."
-python $SCRIPT_ROOT/train.py $SHARED_ARGS --dry-run
-
-# Step 2: Train model
-echo "Step 2: Training model..."
-python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS
-
+ALL_ARGS="$SHARED_ARGS $MODE_ARGS"
 
 # =============================================================================
 # Evaluating model
 # =============================================================================
 echo "============== Evaluating model =============="
-# Collection mode and pipeline controls (execution params come from YAML)
-MODE_ARGS="--batch-mode --verbose --overwrite"
 
-# Combine arguments (execution parameters loaded from YAML)
-ALL_ARGS="$SHARED_ARGS $MODE_ARGS"
 SCRIPT_ROOT="$HOME/lustre1/ykzhang/ICL_RHM/ICL_Modular_Arithmetic/src/scripts/eval"
 # Step 1: Discover available combinations using explicit L,M,MODEL_TYPE
 echo "Step 1: Discovering combinations using explicit L=$L, M=$M, MODEL_TYPE=$MODEL_TYPE..."

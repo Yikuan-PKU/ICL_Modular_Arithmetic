@@ -34,18 +34,28 @@ seed_balanced_batching: true
 seed_sampling_strategy: "balanced"  # "balanced", "random", "weighted"
 seeds_per_batch: null  # null = use all available seeds
 
-# Checkpointing and evaluation (shared)
-save_strategy: "epoch"
-save_steps: 1  # Save every epoch
+# Last-token prediction (shared)
+last_token_prediction: true  # Enable last-token prediction masking
+
+# Checkpointing strategy (shared)
+save_by_steps: true  # If true, save by steps instead of epochs
+save_steps_interval: 500  # Steps interval when save_by_steps=true
+save_strategy: "steps"  # Will be overridden based on save_by_steps
+save_steps: 1  # Will be overridden based on save_by_steps
 save_total_limit: 100
 load_best_model_at_end: true
 metric_for_best_model: "eval_loss"
-evaluation_strategy: "epoch"
-eval_steps: 1  # Evaluate every epoch
+
+# NEW: Evaluation strategy (shared)
+eval_by_steps: true  # If true, evaluate by steps instead of epochs
+eval_steps_interval: 100  # Steps interval when eval_by_steps=true
+evaluation_strategy: "steps"  # Will be overridden based on eval_by_steps
+eval_steps: 1  # Will be overridden based on eval_by_steps
 
 # Logging (shared)
 logging_strategy: "steps"
-logging_steps: 50
+logging_steps: 50  # Show loss+accuracy every 50 steps
+
 
 # Optimization (shared)
 adam_beta1: 0.9
@@ -75,9 +85,19 @@ bf16: false
 task_specific:
   clm:
     task_name: "clm"
-    mlm: false  # CLM doesn't use masking
+    mlm: false
+    last_token_prediction: false
+    # Results in directory: models/uniform_10_L4_M2/clm_noshuffle_seedbalanced/
+    
+  clm_last_token:
+    task_name: "clm" 
+    mlm: false
+    last_token_prediction: true
+    # Results in directory: models/uniform_10_L4_M2/last_noshuffle_seedbalanced/
     
   mlm:
     task_name: "mlm"
-    mlm: true   # MLM uses masking
-    mlm_probability: 0.15  # Standard MLM masking probability
+    mlm: true
+    mlm_probability: 0.15
+    last_token_prediction: false
+    # Results in directory: models/uniform_10_L4_M2/mlm_noshuffle_seedbalanced/

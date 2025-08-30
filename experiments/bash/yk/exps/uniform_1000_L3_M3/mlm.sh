@@ -16,8 +16,8 @@ source ~/lustre1/ykzhang/apps/python-3.11.11/venvICL/bin/activate
 
 # Define experiment parameters using the new simplified structure
 DATASET_TYPE="uniform"
-MODEL_TYPE="clm"
-NUM_SEEDS=2000
+MODEL_TYPE="mlm"
+NUM_SEEDS=1000
 SEED=42
 L=3
 M=3

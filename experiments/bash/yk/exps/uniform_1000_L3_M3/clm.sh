@@ -17,7 +17,7 @@ source ~/lustre1/ykzhang/apps/python-3.11.11/venvICL/bin/activate
 # Define experiment parameters using the new simplified structure
 DATASET_TYPE="uniform"
 MODEL_TYPE="clm"
-NUM_SEEDS=2000
+NUM_SEEDS=1000
 SEED=42
 L=3
 M=3
@@ -34,11 +34,11 @@ echo "============== Training model =============="
 
 SCRIPT_ROOT="$HOME/lustre1/ykzhang/ICL_RHM/ICL_Modular_Arithmetic/src/scripts/train"
 echo "Step 1: Validating training configuration..."
-python $SCRIPT_ROOT/train.py $SHARED_ARGS --dry-run
+python $SCRIPT_ROOT/train.py $SHARED_ARGS --last-token-prediction --dry-run
 
 # Step 2: Train model
 echo "Step 2: Training model..."
-python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS
+python $SCRIPT_ROOT/train.py $SHARED_ARGS $PIPELINE_ARGS --last-token-prediction 
 
 
 # =============================================================================

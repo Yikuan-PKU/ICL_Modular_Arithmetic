@@ -21,7 +21,7 @@ SCRIPT_ROOT="$HOME/lustre1/ykzhang/ICL_RHM/ICL_Modular_Arithmetic/src/scripts/da
 # Primary experiment parameters
 DATASET_TYPE="uniform"      # Options: uniform, zipf
 RNG_SEED=42                # Seed for generating random seeds (for reproducibility)
-NUM_SEEDS=2000                # Number of random seeds to generate
+NUM_SEEDS=1000                # Number of random seeds to generate
 L=3
 M=3
 
@@ -37,10 +37,10 @@ SHARED_ARGS="--dataset-type $DATASET_TYPE --seed $RNG_SEED --num-seeds $NUM_SEED
 echo "============== Generating RAW DATA =============="
 # Step 1: Validate configuration (optional but recommended)
 echo "Step 1: Validating configuration..."
-python $SCRIPT_ROOT/generate_raw.py $SHARED_ARGS --validate-only --last-token-prediction
+python $SCRIPT_ROOT/generate_raw.py $SHARED_ARGS --validate-only 
 
 echo "Step 2: Running generation..."
-python $SCRIPT_ROOT/generate_raw.py $SHARED_ARGS $PIPELINE_ARGS --last-token-prediction
+python $SCRIPT_ROOT/generate_raw.py $SHARED_ARGS $PIPELINE_ARGS 
 
 
 

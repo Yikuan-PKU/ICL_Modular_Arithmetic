@@ -15,7 +15,7 @@ distribution:
 # Configuration-specific metadata
 metadata:
   description: "L=3, m=3 configuration for ICL experiments"
-  experiment_notes: "Deep hierarchy (L=4) with moderate multiplicity (m=3)"                     # Multiplicity
+  experiment_notes: "Deep hierarchy (L=3) with moderate multiplicity (m=3)"                     # Multiplicity
   complexity: "high"        # Subjective complexity assessment
 
 # Validation parameters (optional).     TODO: delete

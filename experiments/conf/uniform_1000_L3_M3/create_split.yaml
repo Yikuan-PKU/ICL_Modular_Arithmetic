@@ -5,18 +5,16 @@
 # RHM Generation Parameters
 rhm_params:
   vocab_size: 32                     # Vocabulary size (number of features)
-  num_classes: 10                    # Number of output classes
+  num_classes: 2                    # Number of output classes
   tuple_size: 2                      # Size of low-level representations
-  samples_per_config: 1000           # Number of sequences to generate per seed
+  samples_per_config: 4000           # Number of sequences to generate per seed
 
 # Rule Distribution Configuration
 distribution:
   type: "uniform"                    # "uniform" or "zipf"
   zipf_alpha: 1.0                    # Only used if type is "zipf"
 
-# Dataset Configurations to Generate
-# L: 4                             # Hierarchy depth
-# m: 2                             # Multiplicity (number of synonyms)
+
 
 # NEW: Train/Validation Split Configuration
 split_config:
