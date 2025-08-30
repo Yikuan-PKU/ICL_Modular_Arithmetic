@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=interp
 #SBATCH --export=ALL
-#SBATCH --partition=cpu
+#SBATCH --partition=erc-cristia
 #SBATCH --mem=30G
 #SBATCH --cpus-per-task=2
 #SBATCH --time=4:00:00

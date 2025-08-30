@@ -86,7 +86,9 @@ def extract_stat(data_dir: Path, n_clusters: int, max_shots=None, max_sequences=
     # print("Inter-layer correlations:", corr)
     # print("Functional diversity:", diversity)
 
-    step = seq_meta_batch[0]["step"]
+    # step = seq_meta_batch[0]["step"]
+
+    step = seq_meta_batch[next(iter(seq_meta_batch))]["step"]
 
     phase1_json = {
         step: {
@@ -153,9 +155,11 @@ def main() -> None:
                 max_shots=args.max_shots,
                 max_sequences=args.max_seq,
             )
+
             result_dict.update(phase1_json)
+            print(result_dict)
             JsonProcessor.save_json(result_dict, output_file)
-            logger.info(f"Save the rest to: {output_file}/{args.task}.json")
+            logger.info(f"Save the rest to: {output_file}")
     # except:
     #     logger.info(f"Fail to extract stat from: {step_dir}")
     else:

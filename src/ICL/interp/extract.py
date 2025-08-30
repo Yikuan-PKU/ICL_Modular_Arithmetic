@@ -181,7 +181,7 @@ class FeatureExtractor:
             "entropy": self._attention_entropy(attn_matrix),
             "locality": self._locality_score(attn_matrix, meta["context_boundaries"]),
             "cross_attention": self._cross_attention(attn_matrix, meta["context_boundaries"]),
-            "query_to_context": self._query_to_context(attn_matrix, meta["context_boundaries"], meta["query_position"]),
+            # "query_to_context": self._query_to_context(attn_matrix, meta["context_boundaries"], meta["query_position"]),
         }
 
     def _attention_entropy(self, attn):
@@ -234,14 +234,14 @@ class PreClusteringAnalyzer:
         entropies = [f["entropy"] for f in features]
         localities = [f["locality"] for f in features]
         cross_attn = [f["cross_attention"] for f in features]
-        query2ctx = [f["query_to_context"] for f in features]
+        # query2ctx = [f["query_to_context"] for f in features]
 
         self.summary_stats = {
             "entropy_mean": np.mean(entropies),
             "entropy_std": np.std(entropies),
             "locality_mean": np.mean(localities),
             "cross_attention_mean": np.mean(cross_attn),
-            "query2ctx_mean": np.mean(query2ctx),
+            # "query2ctx_mean": np.mean(query2ctx),
             "total_heads": len(features),
         }
         return self.summary_stats
@@ -327,7 +327,8 @@ class LayerStatsAnalyzer:
         # --- 1. Aggregate features per layer ---
         layer_map = defaultdict(list)
         for f in features:
-            layer_map[f["layer"]].append([f["entropy"], f["locality"], f["cross_attention"], f["query_to_context"]])
+            # layer_map[f["layer"]].append([f["entropy"], f["locality"], f["cross_attention"], f["query_to_context"]])
+            layer_map[f["layer"]].append([f["entropy"], f["locality"], f["cross_attention"]])
 
         self.layer_stats = {}
         for layer, feats in layer_map.items():
